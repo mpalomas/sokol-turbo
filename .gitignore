@@ -5,3 +5,6 @@ build/
 .fips-*
 *.pyc
 #<fips
+
+.cache
+_deps
