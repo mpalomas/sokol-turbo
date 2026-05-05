@@ -23,12 +23,27 @@ struct libdecor;
 struct libdecor_frame;
 struct libdecor_configuration;
 struct libdecor_state;
+struct xkb_context;
+struct xkb_keymap;
+struct xkb_state;
+struct wl_shm;
+struct wl_cursor_theme;
+struct wl_cursor;
+struct wl_cursor_image;
+struct wl_buffer;
+struct zwp_pointer_constraints_v1;
+struct zwp_locked_pointer_v1;
+struct zwp_confined_pointer_v1;
+struct zwp_relative_pointer_manager_v1;
+struct zwp_relative_pointer_v1;
 
 typedef struct _sapp_wayland_t {
     struct wl_display* display;
     struct wl_registry* registry;
     struct wl_compositor* compositor;
+    struct wl_shm* shm;
     struct wl_surface* surface;
+    struct wl_surface* cursor_surface;
     struct wl_seat* seat;
     struct wl_pointer* pointer;
     struct wl_keyboard* keyboard;
@@ -44,6 +59,26 @@ typedef struct _sapp_wayland_t {
     uint32_t seat_version;
     uint32_t pointer_serial;
     uint32_t keyboard_serial;
+    uint32_t mouse_buttons;
+    uint32_t modifiers;
+    uint32_t xkb_shift;
+    uint32_t xkb_ctrl;
+    uint32_t xkb_alt;
+    uint32_t xkb_super;
+    struct xkb_context* xkb_context;
+    struct xkb_keymap* xkb_keymap;
+    struct xkb_state* xkb_state;
+    struct wl_cursor_theme* cursor_theme;
+    struct wl_cursor* default_cursor;
+    struct wl_buffer* hidden_cursor_buffer;
+    struct zwp_pointer_constraints_v1* pointer_constraints;
+    struct zwp_locked_pointer_v1* locked_pointer;
+    struct zwp_relative_pointer_manager_v1* relative_pointer_manager;
+    struct zwp_relative_pointer_v1* relative_pointer;
+    void* wayland_cursor_so;
+    bool pointer_serial_valid;
+    bool pointer_focused;
+    bool keyboard_focused;
     bool configured;
     bool close_requested;
     bool using_libdecor;
@@ -63,6 +98,10 @@ SOKOL_APP_API_DECL const void* sapp_wayland_get_surface(void);
 
 #include <errno.h>
 #include <poll.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <wayland-cursor.h>
+#include <stdlib.h>
 
 enum {
     XDG_WM_BASE_DESTROY = 0,
@@ -76,11 +115,27 @@ enum {
     XDG_TOPLEVEL_SET_TITLE = 2,
     XDG_TOPLEVEL_SET_FULLSCREEN = 11,
     XDG_TOPLEVEL_UNSET_FULLSCREEN = 12,
+    ZWP_POINTER_CONSTRAINTS_DESTROY = 0,
+    ZWP_POINTER_CONSTRAINTS_LOCK_POINTER = 1,
+    ZWP_LOCKED_POINTER_DESTROY = 0,
+    ZWP_RELATIVE_POINTER_MANAGER_DESTROY = 0,
+    ZWP_RELATIVE_POINTER_MANAGER_GET_RELATIVE_POINTER = 1,
+    ZWP_RELATIVE_POINTER_DESTROY = 0,
+};
+
+enum {
+    ZWP_POINTER_CONSTRAINTS_LIFETIME_ONESHOT = 1,
+    ZWP_POINTER_CONSTRAINTS_LIFETIME_PERSISTENT = 2,
 };
 
 struct xdg_wm_base { struct wl_proxy* proxy; };
 struct xdg_surface { struct wl_proxy* proxy; };
 struct xdg_toplevel { struct wl_proxy* proxy; };
+struct zwp_pointer_constraints_v1 { struct wl_proxy* proxy; };
+struct zwp_locked_pointer_v1 { struct wl_proxy* proxy; };
+struct zwp_confined_pointer_v1 { struct wl_proxy* proxy; };
+struct zwp_relative_pointer_manager_v1 { struct wl_proxy* proxy; };
+struct zwp_relative_pointer_v1 { struct wl_proxy* proxy; };
 struct libdecor { int _unused; };
 struct libdecor_frame { int _unused; };
 struct libdecor_configuration { int _unused; };
@@ -144,11 +199,25 @@ typedef struct {
 
 static _sapp_libdecor_api_t _sapp_libdecor;
 
+typedef struct {
+    struct wl_cursor_theme* (*theme_load)(const char* name, int size, struct wl_shm* shm);
+    void (*theme_destroy)(struct wl_cursor_theme* theme);
+    struct wl_cursor* (*theme_get_cursor)(struct wl_cursor_theme* theme, const char* name);
+    struct wl_buffer* (*image_get_buffer)(struct wl_cursor_image* image);
+} _sapp_wayland_cursor_api_t;
+
+static _sapp_wayland_cursor_api_t _sapp_wayland_cursor;
+
 static const struct wl_interface xdg_wm_base_interface;
 static const struct wl_interface xdg_surface_interface;
 static const struct wl_interface xdg_toplevel_interface;
 static const struct wl_interface xdg_positioner_interface;
 static const struct wl_interface xdg_popup_interface;
+static const struct wl_interface zwp_pointer_constraints_v1_interface;
+static const struct wl_interface zwp_locked_pointer_v1_interface;
+static const struct wl_interface zwp_confined_pointer_v1_interface;
+static const struct wl_interface zwp_relative_pointer_manager_v1_interface;
+static const struct wl_interface zwp_relative_pointer_v1_interface;
 
 static const struct wl_interface* _sapp_xdg_wm_base_request_types[] = {
     NULL, NULL, &xdg_positioner_interface, &wl_surface_interface, NULL,
@@ -159,6 +228,20 @@ static const struct wl_interface* _sapp_xdg_surface_request_types[] = {
 };
 static const struct wl_interface* _sapp_xdg_toplevel_request_types[] = {
     NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, &wl_output_interface, NULL,
+};
+static const struct wl_interface* _sapp_zwp_pointer_constraints_request_types[] = {
+    NULL,
+    &zwp_locked_pointer_v1_interface, &wl_surface_interface, &wl_pointer_interface, &wl_region_interface, NULL,
+    &zwp_confined_pointer_v1_interface, &wl_surface_interface, &wl_pointer_interface, &wl_region_interface, NULL,
+};
+static const struct wl_interface* _sapp_zwp_locked_pointer_request_types[] = {
+    NULL, NULL, NULL,
+};
+static const struct wl_interface* _sapp_zwp_relative_pointer_manager_request_types[] = {
+    NULL, &zwp_relative_pointer_v1_interface, &wl_pointer_interface,
+};
+static const struct wl_interface* _sapp_zwp_relative_pointer_request_types[] = {
+    NULL,
 };
 static const struct wl_message _sapp_xdg_wm_base_requests[] = {
     { "destroy", "", _sapp_xdg_wm_base_request_types + 0 },
@@ -201,6 +284,30 @@ static const struct wl_message _sapp_xdg_toplevel_events[] = {
     { "configure_bounds", "ii", _sapp_xdg_toplevel_request_types + 0 },
     { "wm_capabilities", "a", _sapp_xdg_toplevel_request_types + 0 },
 };
+static const struct wl_message _sapp_zwp_pointer_constraints_requests[] = {
+    { "destroy", "", _sapp_zwp_pointer_constraints_request_types + 0 },
+    { "lock_pointer", "noo?ou", _sapp_zwp_pointer_constraints_request_types + 1 },
+    { "confine_pointer", "noo?ou", _sapp_zwp_pointer_constraints_request_types + 6 },
+};
+static const struct wl_message _sapp_zwp_locked_pointer_requests[] = {
+    { "destroy", "", _sapp_zwp_locked_pointer_request_types + 0 },
+    { "set_cursor_position_hint", "ff", _sapp_zwp_locked_pointer_request_types + 0 },
+    { "set_region", "?o", _sapp_zwp_locked_pointer_request_types + 0 },
+};
+static const struct wl_message _sapp_zwp_locked_pointer_events[] = {
+    { "locked", "", _sapp_zwp_locked_pointer_request_types + 0 },
+    { "unlocked", "", _sapp_zwp_locked_pointer_request_types + 0 },
+};
+static const struct wl_message _sapp_zwp_relative_pointer_manager_requests[] = {
+    { "destroy", "", _sapp_zwp_relative_pointer_manager_request_types + 0 },
+    { "get_relative_pointer", "no", _sapp_zwp_relative_pointer_manager_request_types + 1 },
+};
+static const struct wl_message _sapp_zwp_relative_pointer_requests[] = {
+    { "destroy", "", _sapp_zwp_relative_pointer_request_types + 0 },
+};
+static const struct wl_message _sapp_zwp_relative_pointer_events[] = {
+    { "relative_motion", "uuffff", _sapp_zwp_relative_pointer_request_types + 0 },
+};
 
 static const struct wl_interface xdg_wm_base_interface = {
     "xdg_wm_base", 1, 4, _sapp_xdg_wm_base_requests, 1, _sapp_xdg_wm_base_events
@@ -217,6 +324,21 @@ static const struct wl_interface xdg_toplevel_interface = {
 static const struct wl_interface xdg_popup_interface = {
     "xdg_popup", 1, 0, NULL, 0, NULL
 };
+static const struct wl_interface zwp_pointer_constraints_v1_interface = {
+    "zwp_pointer_constraints_v1", 1, 3, _sapp_zwp_pointer_constraints_requests, 0, NULL
+};
+static const struct wl_interface zwp_locked_pointer_v1_interface = {
+    "zwp_locked_pointer_v1", 1, 3, _sapp_zwp_locked_pointer_requests, 2, _sapp_zwp_locked_pointer_events
+};
+static const struct wl_interface zwp_confined_pointer_v1_interface = {
+    "zwp_confined_pointer_v1", 1, 0, NULL, 0, NULL
+};
+static const struct wl_interface zwp_relative_pointer_manager_v1_interface = {
+    "zwp_relative_pointer_manager_v1", 1, 2, _sapp_zwp_relative_pointer_manager_requests, 0, NULL
+};
+static const struct wl_interface zwp_relative_pointer_v1_interface = {
+    "zwp_relative_pointer_v1", 1, 1, _sapp_zwp_relative_pointer_requests, 1, _sapp_zwp_relative_pointer_events
+};
 
 typedef void (*_sapp_xdg_wm_base_ping_func)(void*, struct xdg_wm_base*, uint32_t);
 typedef void (*_sapp_xdg_surface_configure_func)(void*, struct xdg_surface*, uint32_t);
@@ -231,6 +353,16 @@ struct _sapp_xdg_toplevel_listener {
     _sapp_xdg_toplevel_close_func close;
     _sapp_xdg_toplevel_configure_bounds_func configure_bounds;
     _sapp_xdg_toplevel_wm_capabilities_func wm_capabilities;
+};
+typedef void (*_sapp_zwp_locked_pointer_locked_func)(void*, struct zwp_locked_pointer_v1*);
+typedef void (*_sapp_zwp_locked_pointer_unlocked_func)(void*, struct zwp_locked_pointer_v1*);
+typedef void (*_sapp_zwp_relative_pointer_motion_func)(void*, struct zwp_relative_pointer_v1*, uint32_t, uint32_t, wl_fixed_t, wl_fixed_t, wl_fixed_t, wl_fixed_t);
+struct _sapp_zwp_locked_pointer_listener {
+    _sapp_zwp_locked_pointer_locked_func locked;
+    _sapp_zwp_locked_pointer_unlocked_func unlocked;
+};
+struct _sapp_zwp_relative_pointer_listener {
+    _sapp_zwp_relative_pointer_motion_func relative_motion;
 };
 
 _SOKOL_PRIVATE void _sapp_xdg_wm_base_pong(struct xdg_wm_base* wm_base, uint32_t serial) {
@@ -269,6 +401,17 @@ _SOKOL_PRIVATE void _sapp_xdg_proxy_destroy(struct wl_proxy* proxy, uint32_t opc
     }
 }
 
+_SOKOL_PRIVATE struct zwp_locked_pointer_v1* _sapp_zwp_pointer_constraints_lock_pointer(struct zwp_pointer_constraints_v1* pointer_constraints, struct wl_surface* surface, struct wl_pointer* pointer) {
+    return (struct zwp_locked_pointer_v1*) wl_proxy_marshal_flags((struct wl_proxy*) pointer_constraints, ZWP_POINTER_CONSTRAINTS_LOCK_POINTER,
+        &zwp_locked_pointer_v1_interface, wl_proxy_get_version((struct wl_proxy*) pointer_constraints), 0,
+        NULL, surface, pointer, NULL, ZWP_POINTER_CONSTRAINTS_LIFETIME_PERSISTENT);
+}
+
+_SOKOL_PRIVATE struct zwp_relative_pointer_v1* _sapp_zwp_relative_pointer_manager_get_relative_pointer(struct zwp_relative_pointer_manager_v1* manager, struct wl_pointer* pointer) {
+    return (struct zwp_relative_pointer_v1*) wl_proxy_marshal_flags((struct wl_proxy*) manager, ZWP_RELATIVE_POINTER_MANAGER_GET_RELATIVE_POINTER,
+        &zwp_relative_pointer_v1_interface, wl_proxy_get_version((struct wl_proxy*) manager), 0, NULL, pointer);
+}
+
 _SOKOL_PRIVATE bool _sapp_wayland_load_libdecor(void) {
     _sapp.wayland.libdecor_so = dlopen("libdecor-0.so.0", RTLD_LAZY | RTLD_LOCAL);
     if (!_sapp.wayland.libdecor_so) {
@@ -300,6 +443,92 @@ _SOKOL_PRIVATE bool _sapp_wayland_load_libdecor(void) {
     _SAPP_WAYLAND_LOAD_LIBDECOR_SYM(configuration_get_window_state, "libdecor_configuration_get_window_state");
     #undef _SAPP_WAYLAND_LOAD_LIBDECOR_SYM
     return true;
+}
+
+_SOKOL_PRIVATE bool _sapp_wayland_load_cursor_lib(void) {
+    _sapp.wayland.wayland_cursor_so = dlopen("libwayland-cursor.so.0", RTLD_LAZY | RTLD_LOCAL);
+    if (!_sapp.wayland.wayland_cursor_so) {
+        return false;
+    }
+    #define _SAPP_WAYLAND_LOAD_CURSOR_SYM(field, sym) \
+        do { \
+            _sapp_wayland_cursor.field = (void*) dlsym(_sapp.wayland.wayland_cursor_so, sym); \
+            if (!_sapp_wayland_cursor.field) { \
+                dlclose(_sapp.wayland.wayland_cursor_so); \
+                _sapp.wayland.wayland_cursor_so = 0; \
+                return false; \
+            } \
+        } while (0)
+    _SAPP_WAYLAND_LOAD_CURSOR_SYM(theme_load, "wl_cursor_theme_load");
+    _SAPP_WAYLAND_LOAD_CURSOR_SYM(theme_destroy, "wl_cursor_theme_destroy");
+    _SAPP_WAYLAND_LOAD_CURSOR_SYM(theme_get_cursor, "wl_cursor_theme_get_cursor");
+    _SAPP_WAYLAND_LOAD_CURSOR_SYM(image_get_buffer, "wl_cursor_image_get_buffer");
+    #undef _SAPP_WAYLAND_LOAD_CURSOR_SYM
+    return true;
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_init_cursor(void) {
+    if (!_sapp.wayland.shm || !_sapp.wayland.compositor || !_sapp_wayland_load_cursor_lib()) {
+        return;
+    }
+    int cursor_size = (int)(24.0f * _sapp.dpi_scale);
+    if (cursor_size < 24) {
+        cursor_size = 24;
+    }
+    _sapp.wayland.cursor_theme = _sapp_wayland_cursor.theme_load(0, cursor_size, _sapp.wayland.shm);
+    if (!_sapp.wayland.cursor_theme) {
+        return;
+    }
+    _sapp.wayland.default_cursor = _sapp_wayland_cursor.theme_get_cursor(_sapp.wayland.cursor_theme, "left_ptr");
+    if (!_sapp.wayland.default_cursor) {
+        _sapp.wayland.default_cursor = _sapp_wayland_cursor.theme_get_cursor(_sapp.wayland.cursor_theme, "default");
+    }
+    _sapp.wayland.cursor_surface = wl_compositor_create_surface(_sapp.wayland.compositor);
+    char tmp[] = "/tmp/sokol-wayland-cursor-XXXXXX";
+    int fd = mkstemp(tmp);
+    if (fd >= 0) {
+        unlink(tmp);
+        const uint32_t transparent = 0;
+        if ((ftruncate(fd, 4) == 0) && (write(fd, &transparent, 4) == 4)) {
+            struct wl_shm_pool* pool = wl_shm_create_pool(_sapp.wayland.shm, fd, 4);
+            if (pool) {
+                _sapp.wayland.hidden_cursor_buffer = wl_shm_pool_create_buffer(pool, 0, 1, 1, 4, WL_SHM_FORMAT_ARGB8888);
+                wl_shm_pool_destroy(pool);
+            }
+        }
+        close(fd);
+    }
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_apply_cursor(bool shown) {
+    if (!_sapp.wayland.pointer || !_sapp.wayland.pointer_serial_valid) {
+        return;
+    }
+    if (!shown) {
+        if (_sapp.wayland.hidden_cursor_buffer && _sapp.wayland.cursor_surface) {
+            wl_pointer_set_cursor(_sapp.wayland.pointer, _sapp.wayland.pointer_serial, _sapp.wayland.cursor_surface, 0, 0);
+            wl_surface_attach(_sapp.wayland.cursor_surface, _sapp.wayland.hidden_cursor_buffer, 0, 0);
+            wl_surface_damage_buffer(_sapp.wayland.cursor_surface, 0, 0, 1, 1);
+            wl_surface_commit(_sapp.wayland.cursor_surface);
+        } else {
+            wl_pointer_set_cursor(_sapp.wayland.pointer, _sapp.wayland.pointer_serial, 0, 0, 0);
+        }
+        wl_display_flush(_sapp.wayland.display);
+        return;
+    }
+    if (!_sapp.wayland.default_cursor || !_sapp.wayland.cursor_surface || (_sapp.wayland.default_cursor->image_count == 0)) {
+        return;
+    }
+    struct wl_cursor_image* image = _sapp.wayland.default_cursor->images[0];
+    struct wl_buffer* buffer = _sapp_wayland_cursor.image_get_buffer(image);
+    if (!buffer) {
+        return;
+    }
+    wl_pointer_set_cursor(_sapp.wayland.pointer, _sapp.wayland.pointer_serial, _sapp.wayland.cursor_surface, (int32_t)image->hotspot_x, (int32_t)image->hotspot_y);
+    wl_surface_attach(_sapp.wayland.cursor_surface, buffer, 0, 0);
+    wl_surface_damage_buffer(_sapp.wayland.cursor_surface, 0, 0, (int32_t)image->width, (int32_t)image->height);
+    wl_surface_commit(_sapp.wayland.cursor_surface);
+    wl_display_flush(_sapp.wayland.display);
 }
 
 _SOKOL_PRIVATE void _sapp_wayland_app_event(sapp_event_type type) {
@@ -424,12 +653,514 @@ _SOKOL_PRIVATE const struct _sapp_xdg_toplevel_listener _sapp_wayland_xdg_toplev
     _sapp_wayland_xdg_toplevel_wm_capabilities
 };
 
+_SOKOL_PRIVATE uint32_t _sapp_wayland_button_modifier_bit(sapp_mousebutton btn) {
+    switch (btn) {
+        case SAPP_MOUSEBUTTON_LEFT: return SAPP_MODIFIER_LMB;
+        case SAPP_MOUSEBUTTON_RIGHT: return SAPP_MODIFIER_RMB;
+        case SAPP_MOUSEBUTTON_MIDDLE: return SAPP_MODIFIER_MMB;
+        default: return 0;
+    }
+}
+
+_SOKOL_PRIVATE uint32_t _sapp_wayland_key_modifier_bit(sapp_keycode key) {
+    switch (key) {
+        case SAPP_KEYCODE_LEFT_SHIFT:
+        case SAPP_KEYCODE_RIGHT_SHIFT:
+            return SAPP_MODIFIER_SHIFT;
+        case SAPP_KEYCODE_LEFT_CONTROL:
+        case SAPP_KEYCODE_RIGHT_CONTROL:
+            return SAPP_MODIFIER_CTRL;
+        case SAPP_KEYCODE_LEFT_ALT:
+        case SAPP_KEYCODE_RIGHT_ALT:
+            return SAPP_MODIFIER_ALT;
+        case SAPP_KEYCODE_LEFT_SUPER:
+        case SAPP_KEYCODE_RIGHT_SUPER:
+            return SAPP_MODIFIER_SUPER;
+        default:
+            return 0;
+    }
+}
+
+_SOKOL_PRIVATE uint32_t _sapp_wayland_mods(void) {
+    uint32_t mods = _sapp.wayland.modifiers;
+    if (_sapp.wayland.mouse_buttons & (1u << SAPP_MOUSEBUTTON_LEFT)) {
+        mods |= SAPP_MODIFIER_LMB;
+    }
+    if (_sapp.wayland.mouse_buttons & (1u << SAPP_MOUSEBUTTON_RIGHT)) {
+        mods |= SAPP_MODIFIER_RMB;
+    }
+    if (_sapp.wayland.mouse_buttons & (1u << SAPP_MOUSEBUTTON_MIDDLE)) {
+        mods |= SAPP_MODIFIER_MMB;
+    }
+    return mods;
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_mouse_update(float x, float y, bool clear_dxdy) {
+    if (!_sapp.mouse.locked) {
+        if (clear_dxdy) {
+            _sapp.mouse.dx = 0.0f;
+            _sapp.mouse.dy = 0.0f;
+        } else if (_sapp.mouse.pos_valid) {
+            _sapp.mouse.dx = x - _sapp.mouse.x;
+            _sapp.mouse.dy = y - _sapp.mouse.y;
+        }
+        _sapp.mouse.x = x;
+        _sapp.mouse.y = y;
+        _sapp.mouse.pos_valid = true;
+    }
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_mouse_event(sapp_event_type type, sapp_mousebutton btn) {
+    if (_sapp_events_enabled()) {
+        _sapp_init_event(type);
+        _sapp.event.mouse_button = btn;
+        _sapp.event.modifiers = _sapp_wayland_mods();
+        _sapp_call_event(&_sapp.event);
+    }
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_scroll_event(float x, float y) {
+    if (_sapp_events_enabled()) {
+        _sapp_init_event(SAPP_EVENTTYPE_MOUSE_SCROLL);
+        _sapp.event.modifiers = _sapp_wayland_mods();
+        _sapp.event.scroll_x = x;
+        _sapp.event.scroll_y = y;
+        _sapp_call_event(&_sapp.event);
+    }
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_key_event(sapp_event_type type, sapp_keycode key, bool repeat) {
+    if (_sapp_events_enabled()) {
+        _sapp_init_event(type);
+        _sapp.event.key_code = key;
+        _sapp.event.key_repeat = repeat;
+        _sapp.event.modifiers = _sapp_wayland_mods();
+        if (type == SAPP_EVENTTYPE_KEY_DOWN) {
+            _sapp.event.modifiers |= _sapp_wayland_key_modifier_bit(key);
+        } else if (type == SAPP_EVENTTYPE_KEY_UP) {
+            _sapp.event.modifiers &= ~_sapp_wayland_key_modifier_bit(key);
+        }
+        _sapp_call_event(&_sapp.event);
+        if (_sapp.clipboard.enabled &&
+            (type == SAPP_EVENTTYPE_KEY_DOWN) &&
+            (_sapp.event.modifiers == SAPP_MODIFIER_CTRL) &&
+            (_sapp.event.key_code == SAPP_KEYCODE_V))
+        {
+            _sapp_init_event(SAPP_EVENTTYPE_CLIPBOARD_PASTED);
+            _sapp_call_event(&_sapp.event);
+        }
+    }
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_char_event(uint32_t chr, bool repeat) {
+    if (_sapp_events_enabled()) {
+        _sapp_init_event(SAPP_EVENTTYPE_CHAR);
+        _sapp.event.char_code = chr;
+        _sapp.event.key_repeat = repeat;
+        _sapp.event.modifiers = _sapp_wayland_mods();
+        _sapp_call_event(&_sapp.event);
+    }
+}
+
+_SOKOL_PRIVATE sapp_keycode _sapp_wayland_translate_key(uint32_t key) {
+    switch (key) {
+        case 1: return SAPP_KEYCODE_ESCAPE;
+        case 2: return SAPP_KEYCODE_1;
+        case 3: return SAPP_KEYCODE_2;
+        case 4: return SAPP_KEYCODE_3;
+        case 5: return SAPP_KEYCODE_4;
+        case 6: return SAPP_KEYCODE_5;
+        case 7: return SAPP_KEYCODE_6;
+        case 8: return SAPP_KEYCODE_7;
+        case 9: return SAPP_KEYCODE_8;
+        case 10: return SAPP_KEYCODE_9;
+        case 11: return SAPP_KEYCODE_0;
+        case 12: return SAPP_KEYCODE_MINUS;
+        case 13: return SAPP_KEYCODE_EQUAL;
+        case 14: return SAPP_KEYCODE_BACKSPACE;
+        case 15: return SAPP_KEYCODE_TAB;
+        case 16: return SAPP_KEYCODE_Q;
+        case 17: return SAPP_KEYCODE_W;
+        case 18: return SAPP_KEYCODE_E;
+        case 19: return SAPP_KEYCODE_R;
+        case 20: return SAPP_KEYCODE_T;
+        case 21: return SAPP_KEYCODE_Y;
+        case 22: return SAPP_KEYCODE_U;
+        case 23: return SAPP_KEYCODE_I;
+        case 24: return SAPP_KEYCODE_O;
+        case 25: return SAPP_KEYCODE_P;
+        case 26: return SAPP_KEYCODE_LEFT_BRACKET;
+        case 27: return SAPP_KEYCODE_RIGHT_BRACKET;
+        case 28: return SAPP_KEYCODE_ENTER;
+        case 29: return SAPP_KEYCODE_LEFT_CONTROL;
+        case 30: return SAPP_KEYCODE_A;
+        case 31: return SAPP_KEYCODE_S;
+        case 32: return SAPP_KEYCODE_D;
+        case 33: return SAPP_KEYCODE_F;
+        case 34: return SAPP_KEYCODE_G;
+        case 35: return SAPP_KEYCODE_H;
+        case 36: return SAPP_KEYCODE_J;
+        case 37: return SAPP_KEYCODE_K;
+        case 38: return SAPP_KEYCODE_L;
+        case 39: return SAPP_KEYCODE_SEMICOLON;
+        case 40: return SAPP_KEYCODE_APOSTROPHE;
+        case 41: return SAPP_KEYCODE_GRAVE_ACCENT;
+        case 42: return SAPP_KEYCODE_LEFT_SHIFT;
+        case 43: return SAPP_KEYCODE_BACKSLASH;
+        case 44: return SAPP_KEYCODE_Z;
+        case 45: return SAPP_KEYCODE_X;
+        case 46: return SAPP_KEYCODE_C;
+        case 47: return SAPP_KEYCODE_V;
+        case 48: return SAPP_KEYCODE_B;
+        case 49: return SAPP_KEYCODE_N;
+        case 50: return SAPP_KEYCODE_M;
+        case 51: return SAPP_KEYCODE_COMMA;
+        case 52: return SAPP_KEYCODE_PERIOD;
+        case 53: return SAPP_KEYCODE_SLASH;
+        case 54: return SAPP_KEYCODE_RIGHT_SHIFT;
+        case 55: return SAPP_KEYCODE_KP_MULTIPLY;
+        case 56: return SAPP_KEYCODE_LEFT_ALT;
+        case 57: return SAPP_KEYCODE_SPACE;
+        case 58: return SAPP_KEYCODE_CAPS_LOCK;
+        case 59: return SAPP_KEYCODE_F1;
+        case 60: return SAPP_KEYCODE_F2;
+        case 61: return SAPP_KEYCODE_F3;
+        case 62: return SAPP_KEYCODE_F4;
+        case 63: return SAPP_KEYCODE_F5;
+        case 64: return SAPP_KEYCODE_F6;
+        case 65: return SAPP_KEYCODE_F7;
+        case 66: return SAPP_KEYCODE_F8;
+        case 67: return SAPP_KEYCODE_F9;
+        case 68: return SAPP_KEYCODE_F10;
+        case 69: return SAPP_KEYCODE_NUM_LOCK;
+        case 70: return SAPP_KEYCODE_SCROLL_LOCK;
+        case 71: return SAPP_KEYCODE_KP_7;
+        case 72: return SAPP_KEYCODE_KP_8;
+        case 73: return SAPP_KEYCODE_KP_9;
+        case 74: return SAPP_KEYCODE_KP_SUBTRACT;
+        case 75: return SAPP_KEYCODE_KP_4;
+        case 76: return SAPP_KEYCODE_KP_5;
+        case 77: return SAPP_KEYCODE_KP_6;
+        case 78: return SAPP_KEYCODE_KP_ADD;
+        case 79: return SAPP_KEYCODE_KP_1;
+        case 80: return SAPP_KEYCODE_KP_2;
+        case 81: return SAPP_KEYCODE_KP_3;
+        case 82: return SAPP_KEYCODE_KP_0;
+        case 83: return SAPP_KEYCODE_KP_DECIMAL;
+        case 87: return SAPP_KEYCODE_F11;
+        case 88: return SAPP_KEYCODE_F12;
+        case 96: return SAPP_KEYCODE_KP_ENTER;
+        case 97: return SAPP_KEYCODE_RIGHT_CONTROL;
+        case 98: return SAPP_KEYCODE_KP_DIVIDE;
+        case 99: return SAPP_KEYCODE_PRINT_SCREEN;
+        case 100: return SAPP_KEYCODE_RIGHT_ALT;
+        case 102: return SAPP_KEYCODE_HOME;
+        case 103: return SAPP_KEYCODE_UP;
+        case 104: return SAPP_KEYCODE_PAGE_UP;
+        case 105: return SAPP_KEYCODE_LEFT;
+        case 106: return SAPP_KEYCODE_RIGHT;
+        case 107: return SAPP_KEYCODE_END;
+        case 108: return SAPP_KEYCODE_DOWN;
+        case 109: return SAPP_KEYCODE_PAGE_DOWN;
+        case 110: return SAPP_KEYCODE_INSERT;
+        case 111: return SAPP_KEYCODE_DELETE;
+        case 119: return SAPP_KEYCODE_PAUSE;
+        case 125: return SAPP_KEYCODE_LEFT_SUPER;
+        case 126: return SAPP_KEYCODE_RIGHT_SUPER;
+        case 127: return SAPP_KEYCODE_MENU;
+        default: return SAPP_KEYCODE_INVALID;
+    }
+}
+
+_SOKOL_PRIVATE sapp_mousebutton _sapp_wayland_translate_button(uint32_t button) {
+    switch (button) {
+        case 0x110: return SAPP_MOUSEBUTTON_LEFT;
+        case 0x111: return SAPP_MOUSEBUTTON_RIGHT;
+        case 0x112: return SAPP_MOUSEBUTTON_MIDDLE;
+        default: return SAPP_MOUSEBUTTON_INVALID;
+    }
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_pointer_enter(void* data, struct wl_pointer* pointer, uint32_t serial, struct wl_surface* surface, wl_fixed_t sx, wl_fixed_t sy) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(pointer);
+    _sapp.wayland.pointer_serial = serial;
+    _sapp.wayland.pointer_serial_valid = true;
+    _sapp.wayland.pointer_focused = (surface == _sapp.wayland.surface);
+    if (_sapp.wayland.pointer_focused) {
+        _sapp_wayland_mouse_update((float)wl_fixed_to_double(sx), (float)wl_fixed_to_double(sy), true);
+        _sapp_wayland_apply_cursor(_sapp.mouse.shown);
+        _sapp_wayland_mouse_event(SAPP_EVENTTYPE_MOUSE_ENTER, SAPP_MOUSEBUTTON_INVALID);
+    }
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_pointer_leave(void* data, struct wl_pointer* pointer, uint32_t serial, struct wl_surface* surface) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(pointer); _SOKOL_UNUSED(serial); _SOKOL_UNUSED(surface);
+    if (_sapp.wayland.pointer_focused) {
+        _sapp_wayland_mouse_event(SAPP_EVENTTYPE_MOUSE_LEAVE, SAPP_MOUSEBUTTON_INVALID);
+    }
+    _sapp.wayland.pointer_focused = false;
+    _sapp.wayland.pointer_serial_valid = false;
+    _sapp.mouse.pos_valid = false;
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_pointer_motion(void* data, struct wl_pointer* pointer, uint32_t time, wl_fixed_t sx, wl_fixed_t sy) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(pointer); _SOKOL_UNUSED(time);
+    if (_sapp.wayland.pointer_focused && !_sapp.mouse.locked) {
+        _sapp_wayland_mouse_update((float)wl_fixed_to_double(sx), (float)wl_fixed_to_double(sy), false);
+        _sapp_wayland_mouse_event(SAPP_EVENTTYPE_MOUSE_MOVE, SAPP_MOUSEBUTTON_INVALID);
+    }
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_pointer_button(void* data, struct wl_pointer* pointer, uint32_t serial, uint32_t time, uint32_t button, uint32_t state) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(pointer); _SOKOL_UNUSED(serial); _SOKOL_UNUSED(time);
+    if (_sapp.wayland.pointer_focused) {
+        const sapp_mousebutton btn = _sapp_wayland_translate_button(button);
+        if (btn != SAPP_MOUSEBUTTON_INVALID) {
+            if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
+                _sapp.wayland.mouse_buttons |= (1u << btn);
+                _sapp_wayland_mouse_event(SAPP_EVENTTYPE_MOUSE_DOWN, btn);
+            } else {
+                _sapp.wayland.mouse_buttons &= ~(1u << btn);
+                _sapp_wayland_mouse_event(SAPP_EVENTTYPE_MOUSE_UP, btn);
+            }
+        }
+    }
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_pointer_axis(void* data, struct wl_pointer* pointer, uint32_t time, uint32_t axis, wl_fixed_t value) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(pointer); _SOKOL_UNUSED(time);
+    if (_sapp.wayland.pointer_focused) {
+        const float scroll = (float)wl_fixed_to_double(value) / 10.0f;
+        if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL) {
+            _sapp_wayland_scroll_event(0.0f, -scroll);
+        } else if (axis == WL_POINTER_AXIS_HORIZONTAL_SCROLL) {
+            _sapp_wayland_scroll_event(scroll, 0.0f);
+        }
+    }
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_pointer_frame(void* data, struct wl_pointer* pointer) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(pointer);
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_pointer_axis_source(void* data, struct wl_pointer* pointer, uint32_t axis_source) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(pointer); _SOKOL_UNUSED(axis_source);
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_pointer_axis_stop(void* data, struct wl_pointer* pointer, uint32_t time, uint32_t axis) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(pointer); _SOKOL_UNUSED(time); _SOKOL_UNUSED(axis);
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_pointer_axis_discrete(void* data, struct wl_pointer* pointer, uint32_t axis, int32_t discrete) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(pointer); _SOKOL_UNUSED(axis); _SOKOL_UNUSED(discrete);
+}
+
+_SOKOL_PRIVATE const struct wl_pointer_listener _sapp_wayland_pointer_listener = {
+    _sapp_wayland_pointer_enter,
+    _sapp_wayland_pointer_leave,
+    _sapp_wayland_pointer_motion,
+    _sapp_wayland_pointer_button,
+    _sapp_wayland_pointer_axis,
+    _sapp_wayland_pointer_frame,
+    _sapp_wayland_pointer_axis_source,
+    _sapp_wayland_pointer_axis_stop,
+    _sapp_wayland_pointer_axis_discrete,
+};
+
+_SOKOL_PRIVATE void _sapp_wayland_locked_pointer_locked(void* data, struct zwp_locked_pointer_v1* locked_pointer) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(locked_pointer);
+    _sapp.mouse.locked = true;
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_locked_pointer_unlocked(void* data, struct zwp_locked_pointer_v1* locked_pointer) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(locked_pointer);
+    if (_sapp.wayland.locked_pointer) {
+        _sapp_xdg_proxy_destroy((struct wl_proxy*) _sapp.wayland.locked_pointer, ZWP_LOCKED_POINTER_DESTROY);
+        _sapp.wayland.locked_pointer = 0;
+    }
+    _sapp.mouse.locked = false;
+    _sapp.mouse.dx = 0.0f;
+    _sapp.mouse.dy = 0.0f;
+    _sapp_wayland_apply_cursor(_sapp.mouse.shown);
+}
+
+_SOKOL_PRIVATE const struct _sapp_zwp_locked_pointer_listener _sapp_wayland_locked_pointer_listener = {
+    _sapp_wayland_locked_pointer_locked,
+    _sapp_wayland_locked_pointer_unlocked,
+};
+
+_SOKOL_PRIVATE void _sapp_wayland_relative_pointer_motion(void* data, struct zwp_relative_pointer_v1* relative_pointer, uint32_t utime_hi, uint32_t utime_lo, wl_fixed_t dx, wl_fixed_t dy, wl_fixed_t dx_unaccel, wl_fixed_t dy_unaccel) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(relative_pointer); _SOKOL_UNUSED(utime_hi); _SOKOL_UNUSED(utime_lo); _SOKOL_UNUSED(dx); _SOKOL_UNUSED(dy);
+    if (_sapp.mouse.locked && _sapp.wayland.pointer_focused) {
+        _sapp.mouse.dx = (float)wl_fixed_to_double(dx_unaccel);
+        _sapp.mouse.dy = (float)wl_fixed_to_double(dy_unaccel);
+        _sapp_wayland_mouse_event(SAPP_EVENTTYPE_MOUSE_MOVE, SAPP_MOUSEBUTTON_INVALID);
+    }
+}
+
+_SOKOL_PRIVATE const struct _sapp_zwp_relative_pointer_listener _sapp_wayland_relative_pointer_listener = {
+    _sapp_wayland_relative_pointer_motion,
+};
+
+_SOKOL_PRIVATE void _sapp_wayland_keyboard_keymap(void* data, struct wl_keyboard* keyboard, uint32_t format, int fd, uint32_t size) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(keyboard);
+    if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) {
+        close(fd);
+        return;
+    }
+    char* keymap_str = (char*)mmap(0, size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    if (keymap_str == MAP_FAILED) {
+        return;
+    }
+    if (_sapp.wayland.xkb_state) {
+        xkb_state_unref(_sapp.wayland.xkb_state);
+        _sapp.wayland.xkb_state = 0;
+    }
+    if (_sapp.wayland.xkb_keymap) {
+        xkb_keymap_unref(_sapp.wayland.xkb_keymap);
+        _sapp.wayland.xkb_keymap = 0;
+    }
+    _sapp.wayland.xkb_keymap = xkb_keymap_new_from_string(_sapp.wayland.xkb_context, keymap_str, XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS);
+    munmap(keymap_str, size);
+    if (_sapp.wayland.xkb_keymap) {
+        _sapp.wayland.xkb_state = xkb_state_new(_sapp.wayland.xkb_keymap);
+        _sapp.wayland.xkb_shift = xkb_keymap_mod_get_index(_sapp.wayland.xkb_keymap, XKB_MOD_NAME_SHIFT);
+        _sapp.wayland.xkb_ctrl = xkb_keymap_mod_get_index(_sapp.wayland.xkb_keymap, XKB_MOD_NAME_CTRL);
+        _sapp.wayland.xkb_alt = xkb_keymap_mod_get_index(_sapp.wayland.xkb_keymap, XKB_MOD_NAME_ALT);
+        _sapp.wayland.xkb_super = xkb_keymap_mod_get_index(_sapp.wayland.xkb_keymap, XKB_MOD_NAME_LOGO);
+    }
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_keyboard_enter(void* data, struct wl_keyboard* keyboard, uint32_t serial, struct wl_surface* surface, struct wl_array* keys) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(keyboard); _SOKOL_UNUSED(keys);
+    _sapp.wayland.keyboard_serial = serial;
+    _sapp.wayland.keyboard_focused = (surface == _sapp.wayland.surface);
+    if (_sapp.wayland.keyboard_focused) {
+        _sapp_wayland_app_event(SAPP_EVENTTYPE_FOCUSED);
+    }
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_keyboard_leave(void* data, struct wl_keyboard* keyboard, uint32_t serial, struct wl_surface* surface) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(keyboard); _SOKOL_UNUSED(serial); _SOKOL_UNUSED(surface);
+    if (_sapp.mouse.locked) {
+        _sapp_wayland_lock_mouse(false);
+    }
+    if (_sapp.wayland.keyboard_focused) {
+        _sapp_wayland_app_event(SAPP_EVENTTYPE_UNFOCUSED);
+    }
+    _sapp.wayland.keyboard_focused = false;
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_keyboard_key(void* data, struct wl_keyboard* keyboard, uint32_t serial, uint32_t time, uint32_t key, uint32_t state) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(keyboard); _SOKOL_UNUSED(time);
+    _sapp.wayland.keyboard_serial = serial;
+    if (!_sapp.wayland.keyboard_focused) {
+        return;
+    }
+    const sapp_keycode keycode = _sapp_wayland_translate_key(key);
+    if (keycode != SAPP_KEYCODE_INVALID) {
+        _sapp_wayland_key_event((state == WL_KEYBOARD_KEY_STATE_PRESSED) ? SAPP_EVENTTYPE_KEY_DOWN : SAPP_EVENTTYPE_KEY_UP, keycode, false);
+    }
+    if ((state == WL_KEYBOARD_KEY_STATE_PRESSED) && _sapp.wayland.xkb_state) {
+        const xkb_keysym_t sym = xkb_state_key_get_one_sym(_sapp.wayland.xkb_state, key + 8);
+        const uint32_t chr = xkb_keysym_to_utf32(sym);
+        if ((chr >= 32) && (chr != 127)) {
+            _sapp_wayland_char_event(chr, false);
+        }
+    }
+}
+
+_SOKOL_PRIVATE uint32_t _sapp_wayland_mod_index_mask(uint32_t index) {
+    return (index < 32) ? (1u << index) : 0;
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_keyboard_modifiers(void* data, struct wl_keyboard* keyboard, uint32_t serial, uint32_t depressed, uint32_t latched, uint32_t locked, uint32_t group) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(keyboard); _SOKOL_UNUSED(serial);
+    const uint32_t active = depressed | latched | locked;
+    uint32_t mods = 0;
+    if (active & _sapp_wayland_mod_index_mask(_sapp.wayland.xkb_shift)) {
+        mods |= SAPP_MODIFIER_SHIFT;
+    }
+    if (active & _sapp_wayland_mod_index_mask(_sapp.wayland.xkb_ctrl)) {
+        mods |= SAPP_MODIFIER_CTRL;
+    }
+    if (active & _sapp_wayland_mod_index_mask(_sapp.wayland.xkb_alt)) {
+        mods |= SAPP_MODIFIER_ALT;
+    }
+    if (active & _sapp_wayland_mod_index_mask(_sapp.wayland.xkb_super)) {
+        mods |= SAPP_MODIFIER_SUPER;
+    }
+    _sapp.wayland.modifiers = mods;
+    if (_sapp.wayland.xkb_state) {
+        xkb_state_update_mask(_sapp.wayland.xkb_state, depressed, latched, locked, 0, 0, group);
+    }
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_keyboard_repeat_info(void* data, struct wl_keyboard* keyboard, int32_t rate, int32_t delay) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(keyboard); _SOKOL_UNUSED(rate); _SOKOL_UNUSED(delay);
+}
+
+_SOKOL_PRIVATE const struct wl_keyboard_listener _sapp_wayland_keyboard_listener = {
+    _sapp_wayland_keyboard_keymap,
+    _sapp_wayland_keyboard_enter,
+    _sapp_wayland_keyboard_leave,
+    _sapp_wayland_keyboard_key,
+    _sapp_wayland_keyboard_modifiers,
+    _sapp_wayland_keyboard_repeat_info,
+};
+
+_SOKOL_PRIVATE void _sapp_wayland_seat_capabilities(void* data, struct wl_seat* seat, uint32_t capabilities) {
+    _SOKOL_UNUSED(data);
+    if ((capabilities & WL_SEAT_CAPABILITY_POINTER) && !_sapp.wayland.pointer) {
+        _sapp.wayland.pointer = wl_seat_get_pointer(seat);
+        wl_pointer_add_listener(_sapp.wayland.pointer, &_sapp_wayland_pointer_listener, 0);
+        if (_sapp.wayland.relative_pointer_manager && !_sapp.wayland.relative_pointer) {
+            _sapp.wayland.relative_pointer = _sapp_zwp_relative_pointer_manager_get_relative_pointer(_sapp.wayland.relative_pointer_manager, _sapp.wayland.pointer);
+            wl_proxy_add_listener((struct wl_proxy*) _sapp.wayland.relative_pointer, (void (**)(void)) &_sapp_wayland_relative_pointer_listener, NULL);
+        }
+    } else if (!(capabilities & WL_SEAT_CAPABILITY_POINTER) && _sapp.wayland.pointer) {
+        if (_sapp.wayland.locked_pointer) {
+            _sapp_xdg_proxy_destroy((struct wl_proxy*) _sapp.wayland.locked_pointer, ZWP_LOCKED_POINTER_DESTROY);
+            _sapp.wayland.locked_pointer = 0;
+        }
+        if (_sapp.wayland.relative_pointer) {
+            _sapp_xdg_proxy_destroy((struct wl_proxy*) _sapp.wayland.relative_pointer, ZWP_RELATIVE_POINTER_DESTROY);
+            _sapp.wayland.relative_pointer = 0;
+        }
+        wl_pointer_release(_sapp.wayland.pointer);
+        _sapp.wayland.pointer = 0;
+        _sapp.wayland.pointer_focused = false;
+        _sapp.wayland.pointer_serial_valid = false;
+        _sapp.mouse.locked = false;
+    }
+    if ((capabilities & WL_SEAT_CAPABILITY_KEYBOARD) && !_sapp.wayland.keyboard) {
+        _sapp.wayland.keyboard = wl_seat_get_keyboard(seat);
+        wl_keyboard_add_listener(_sapp.wayland.keyboard, &_sapp_wayland_keyboard_listener, 0);
+    } else if (!(capabilities & WL_SEAT_CAPABILITY_KEYBOARD) && _sapp.wayland.keyboard) {
+        wl_keyboard_release(_sapp.wayland.keyboard);
+        _sapp.wayland.keyboard = 0;
+        _sapp.wayland.keyboard_focused = false;
+    }
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_seat_name(void* data, struct wl_seat* seat, const char* name) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(seat); _SOKOL_UNUSED(name);
+}
+
+_SOKOL_PRIVATE const struct wl_seat_listener _sapp_wayland_seat_listener = {
+    _sapp_wayland_seat_capabilities,
+    _sapp_wayland_seat_name,
+};
+
 _SOKOL_PRIVATE void _sapp_wayland_registry_global(void* data, struct wl_registry* registry, uint32_t name, const char* interface, uint32_t version) {
     _SOKOL_UNUSED(data);
     if (0 == strcmp(interface, wl_compositor_interface.name)) {
         uint32_t bind_version = version < 4 ? version : 4;
         _sapp.wayland.compositor_version = bind_version;
         _sapp.wayland.compositor = (struct wl_compositor*) wl_registry_bind(registry, name, &wl_compositor_interface, bind_version);
+    } else if (0 == strcmp(interface, wl_shm_interface.name)) {
+        _sapp.wayland.shm = (struct wl_shm*) wl_registry_bind(registry, name, &wl_shm_interface, 1);
     } else if (0 == strcmp(interface, xdg_wm_base_interface.name)) {
         uint32_t bind_version = version < 4 ? version : 4;
         _sapp.wayland.wm_base_version = bind_version;
@@ -439,6 +1170,13 @@ _SOKOL_PRIVATE void _sapp_wayland_registry_global(void* data, struct wl_registry
         uint32_t bind_version = version < 5 ? version : 5;
         _sapp.wayland.seat_version = bind_version;
         _sapp.wayland.seat = (struct wl_seat*) wl_registry_bind(registry, name, &wl_seat_interface, bind_version);
+        wl_seat_add_listener(_sapp.wayland.seat, &_sapp_wayland_seat_listener, 0);
+    } else if (0 == strcmp(interface, zwp_pointer_constraints_v1_interface.name)) {
+        uint32_t bind_version = version < 1 ? version : 1;
+        _sapp.wayland.pointer_constraints = (struct zwp_pointer_constraints_v1*) wl_registry_bind(registry, name, &zwp_pointer_constraints_v1_interface, bind_version);
+    } else if (0 == strcmp(interface, zwp_relative_pointer_manager_v1_interface.name)) {
+        uint32_t bind_version = version < 1 ? version : 1;
+        _sapp.wayland.relative_pointer_manager = (struct zwp_relative_pointer_manager_v1*) wl_registry_bind(registry, name, &zwp_relative_pointer_manager_v1_interface, bind_version);
     }
 }
 
@@ -626,12 +1364,21 @@ _SOKOL_PRIVATE void _sapp_wayland_run(const sapp_desc* desc) {
     if (!_sapp.wayland.display) {
         _SAPP_PANIC(LINUX_X11_OPEN_DISPLAY_FAILED);
     }
+    _sapp.wayland.xkb_shift = XKB_MOD_INVALID;
+    _sapp.wayland.xkb_ctrl = XKB_MOD_INVALID;
+    _sapp.wayland.xkb_alt = XKB_MOD_INVALID;
+    _sapp.wayland.xkb_super = XKB_MOD_INVALID;
+    _sapp.wayland.xkb_context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+    if (!_sapp.wayland.xkb_context) {
+        _SAPP_PANIC(LINUX_X11_CREATE_WINDOW_FAILED);
+    }
     _sapp.wayland.registry = wl_display_get_registry(_sapp.wayland.display);
     wl_registry_add_listener(_sapp.wayland.registry, &_sapp_wayland_registry_listener, NULL);
     wl_display_roundtrip(_sapp.wayland.display);
     if (!_sapp.wayland.compositor) {
         _SAPP_PANIC(LINUX_X11_CREATE_WINDOW_FAILED);
     }
+    _sapp_wayland_init_cursor();
     if (!_sapp_wayland_load_libdecor()) {
         _SAPP_PANIC(LINUX_X11_CREATE_WINDOW_FAILED);
     }
@@ -671,6 +1418,63 @@ _SOKOL_PRIVATE void _sapp_wayland_run(const sapp_desc* desc) {
     #elif defined(SOKOL_VULKAN)
         _sapp_vk_discard();
     #endif
+    if (_sapp.wayland.keyboard) {
+        wl_keyboard_release(_sapp.wayland.keyboard);
+        _sapp.wayland.keyboard = 0;
+    }
+    if (_sapp.wayland.locked_pointer) {
+        _sapp_xdg_proxy_destroy((struct wl_proxy*) _sapp.wayland.locked_pointer, ZWP_LOCKED_POINTER_DESTROY);
+        _sapp.wayland.locked_pointer = 0;
+    }
+    if (_sapp.wayland.relative_pointer) {
+        _sapp_xdg_proxy_destroy((struct wl_proxy*) _sapp.wayland.relative_pointer, ZWP_RELATIVE_POINTER_DESTROY);
+        _sapp.wayland.relative_pointer = 0;
+    }
+    if (_sapp.wayland.pointer) {
+        wl_pointer_release(_sapp.wayland.pointer);
+        _sapp.wayland.pointer = 0;
+    }
+    if (_sapp.wayland.seat) {
+        wl_seat_release(_sapp.wayland.seat);
+        _sapp.wayland.seat = 0;
+    }
+    if (_sapp.wayland.cursor_surface) {
+        wl_surface_destroy(_sapp.wayland.cursor_surface);
+        _sapp.wayland.cursor_surface = 0;
+    }
+    if (_sapp.wayland.hidden_cursor_buffer) {
+        wl_buffer_destroy(_sapp.wayland.hidden_cursor_buffer);
+        _sapp.wayland.hidden_cursor_buffer = 0;
+    }
+    if (_sapp.wayland.cursor_theme) {
+        _sapp_wayland_cursor.theme_destroy(_sapp.wayland.cursor_theme);
+        _sapp.wayland.cursor_theme = 0;
+        _sapp.wayland.default_cursor = 0;
+    }
+    if (_sapp.wayland.wayland_cursor_so) {
+        dlclose(_sapp.wayland.wayland_cursor_so);
+        _sapp.wayland.wayland_cursor_so = 0;
+    }
+    if (_sapp.wayland.xkb_state) {
+        xkb_state_unref(_sapp.wayland.xkb_state);
+        _sapp.wayland.xkb_state = 0;
+    }
+    if (_sapp.wayland.xkb_keymap) {
+        xkb_keymap_unref(_sapp.wayland.xkb_keymap);
+        _sapp.wayland.xkb_keymap = 0;
+    }
+    if (_sapp.wayland.xkb_context) {
+        xkb_context_unref(_sapp.wayland.xkb_context);
+        _sapp.wayland.xkb_context = 0;
+    }
+    if (_sapp.wayland.pointer_constraints) {
+        _sapp_xdg_proxy_destroy((struct wl_proxy*) _sapp.wayland.pointer_constraints, ZWP_POINTER_CONSTRAINTS_DESTROY);
+        _sapp.wayland.pointer_constraints = 0;
+    }
+    if (_sapp.wayland.relative_pointer_manager) {
+        _sapp_xdg_proxy_destroy((struct wl_proxy*) _sapp.wayland.relative_pointer_manager, ZWP_RELATIVE_POINTER_MANAGER_DESTROY);
+        _sapp.wayland.relative_pointer_manager = 0;
+    }
     if (_sapp.wayland.decor_frame) {
         _sapp_libdecor.frame_unref(_sapp.wayland.decor_frame);
         _sapp.wayland.decor_frame = 0;
@@ -692,6 +1496,10 @@ _SOKOL_PRIVATE void _sapp_wayland_run(const sapp_desc* desc) {
     _sapp_xdg_proxy_destroy((struct wl_proxy*) _sapp.wayland.xdg_wm_base, XDG_WM_BASE_DESTROY);
     if (_sapp.wayland.surface) {
         wl_surface_destroy(_sapp.wayland.surface);
+    }
+    if (_sapp.wayland.shm) {
+        wl_shm_destroy(_sapp.wayland.shm);
+        _sapp.wayland.shm = 0;
     }
     if (_sapp.wayland.registry) {
         wl_registry_destroy(_sapp.wayland.registry);
@@ -720,10 +1528,39 @@ _SOKOL_PRIVATE void _sapp_wayland_toggle_fullscreen(void) {
 
 _SOKOL_PRIVATE void _sapp_wayland_update_cursor(sapp_mouse_cursor cursor, bool shown) {
     _SOKOL_UNUSED(cursor); _SOKOL_UNUSED(shown);
+    _sapp_wayland_apply_cursor(shown);
 }
 
 _SOKOL_PRIVATE void _sapp_wayland_lock_mouse(bool lock) {
-    _sapp.mouse.locked = lock;
+    if (lock == _sapp.mouse.locked) {
+        return;
+    }
+    _sapp.mouse.dx = 0.0f;
+    _sapp.mouse.dy = 0.0f;
+    if (lock) {
+        if (!_sapp.wayland.pointer_constraints || !_sapp.wayland.pointer || !_sapp.wayland.surface) {
+            _sapp.mouse.locked = false;
+            return;
+        }
+        if (!_sapp.wayland.relative_pointer && _sapp.wayland.relative_pointer_manager) {
+            _sapp.wayland.relative_pointer = _sapp_zwp_relative_pointer_manager_get_relative_pointer(_sapp.wayland.relative_pointer_manager, _sapp.wayland.pointer);
+            wl_proxy_add_listener((struct wl_proxy*) _sapp.wayland.relative_pointer, (void (**)(void)) &_sapp_wayland_relative_pointer_listener, NULL);
+        }
+        if (!_sapp.wayland.locked_pointer) {
+            _sapp.wayland.locked_pointer = _sapp_zwp_pointer_constraints_lock_pointer(_sapp.wayland.pointer_constraints, _sapp.wayland.surface, _sapp.wayland.pointer);
+            wl_proxy_add_listener((struct wl_proxy*) _sapp.wayland.locked_pointer, (void (**)(void)) &_sapp_wayland_locked_pointer_listener, NULL);
+        }
+        _sapp.mouse.locked = true;
+        _sapp_wayland_apply_cursor(false);
+    } else {
+        if (_sapp.wayland.locked_pointer) {
+            _sapp_xdg_proxy_destroy((struct wl_proxy*) _sapp.wayland.locked_pointer, ZWP_LOCKED_POINTER_DESTROY);
+            _sapp.wayland.locked_pointer = 0;
+        }
+        _sapp.mouse.locked = false;
+        _sapp_wayland_apply_cursor(_sapp.mouse.shown);
+    }
+    wl_display_flush(_sapp.wayland.display);
 }
 
 _SOKOL_PRIVATE bool _sapp_wayland_make_custom_mouse_cursor(sapp_mouse_cursor cursor, const sapp_image_desc* desc) {
