@@ -54,5 +54,5 @@ Shader samples require `sokol-shdc`. Set `SOKOL_SHDC` to a local binary, or let 
 ## Fork-Local Files
 
 - `README.TURBO.md`: fork-local workflow notes.
-- `docs/sokol-cmake-migration-plan.md`: CMake migration status and follow-up.
+- `docs/sokol-wayland-support-plan.md`: Wayland support status and follow-up.
 - `samples/`: copied `sapp` samples and helper libraries, excluding upstream `samples/libs/sokol` so builds use this repository's headers.

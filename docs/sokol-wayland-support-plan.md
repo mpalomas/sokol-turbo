@@ -138,6 +138,16 @@ same private Wayland state and public API.
   in core `wl_pointer`; the backend now uses
   `zwp_pointer_constraints_v1.lock_pointer` for confinement and
   `zwp_relative_pointer_v1.relative_motion` for locked relative deltas.
+- Fractional high-DPI support on Wayland requires separating logical content
+  size from buffer size. The backend follows the wio-extra approach: use
+  `wp_fractional_scale_v1.preferred_scale / 120.0f` as the scale, render to a
+  scaled framebuffer when `sapp_desc.high_dpi` is true, and use `wp_viewport` to
+  keep the surface destination at the logical window size.
+- When `wp_fractional_scale_manager_v1` is unavailable, high-DPI falls back to
+  integer output scale. The backend tracks `wl_surface.enter/leave`, binds
+  `wl_output` scale events, uses the maximum scale of entered outputs, and uses
+  `wl_surface.preferred_buffer_scale` as another integer fallback on newer
+  compositors.
 
 ## Completed
 
@@ -180,6 +190,18 @@ same private Wayland state and public API.
 - Runtime validation confirms locked mouse behavior matches sokol semantics:
   the cursor disappears, absolute mouse position stops changing, and
   `mouse_dx/mouse_dy` continue updating from relative pointer events.
+- Added first-pass Wayland high-DPI support through embedded `wp_viewporter` and
+  `wp_fractional_scale_manager_v1` protocol bindings. Logical window size,
+  framebuffer size, `sapp_dpi_scale()`, EGL window size, resize events, pointer
+  coordinates, and relative mouse deltas now account for fractional scale when
+  `sapp_desc.high_dpi` is enabled.
+- Runtime validation on KDE Wayland with fractional scaling around 1.15 passed
+  with `sample_imgui_highdpi_sapp`: rendering looked correct, ImGui interaction
+  worked, and the sample reported a fractional DPI scale.
+- Added integer high-DPI fallback for compositors without fractional-scale:
+  `wl_output` scale tracking, surface enter/leave handling, optional
+  `wl_surface.preferred_buffer_scale`, `wl_surface.set_buffer_scale` when no
+  viewport is available, and viewport-based logical destination when it is.
 - Added top-level CMake support for ImGui samples through dcimgui:
   `SOKOL_DCIMGUI_DIR`, automatic `../dcimgui` detection, fallback clone, and an
   `imgui` target.
@@ -206,7 +228,8 @@ same private Wayland state and public API.
 - Clipboard protocol support. Current clipboard functions only mirror the local
   sokol buffer.
 - Drag/drop protocol support.
-- Fractional scale, output scale, and viewporter handling.
+- Runtime verification of integer-scale fallback on a compositor without
+  `wp_fractional_scale_manager_v1`.
 - Full mouse-lock polish across compositors. Pointer constraints and relative
   pointer support are implemented and validated on the user's compositor, but
   fallback behavior for compositors without these protocols is still minimal.
@@ -259,8 +282,8 @@ cmake -S . -B /tmp/sokol-turbo-wayland-vk \
    Wayland.
 3. Fix any event issues found by `sample_events_sapp`, then add key repeat
    handling for Wayland.
-4. Add output enter/leave and scale handling, then update framebuffer sizing and
-   `sapp_dpi_scale()`.
+4. Runtime-test integer-scale fallback on a compositor without
+   `wp_fractional_scale_manager_v1`.
 5. Replace direct Wayland/EGL/xkbcommon calls with runtime loader tables.
 6. Implement clipboard through Wayland data-device protocols.
 7. Implement cursor theme/images beyond the default arrow and transparent hide
@@ -285,6 +308,10 @@ cmake -S . -B /tmp/sokol-turbo-wayland-vk \
   for first-pass keyboard, pointer, cursor visibility, and mouse-lock testing.
   Mouse lock was verified by observing hidden cursor, frozen absolute position,
   and changing relative deltas.
+- `sample_imgui_highdpi_sapp` was validated on KDE Wayland at fractional scale
+  around 1.15. The UI rendered and interacted correctly, and the sample reported
+  a fractional DPI scale. Integer fallback compile coverage is complete, but it
+  still needs runtime validation on a compositor without fractional-scale.
 - Verify resize, high-DPI scale, key down/up/repeat, UTF-8 text, mouse motion,
   buttons, scroll, cursor visibility, quit, fullscreen, title changes, and
   `sokol_gfx` glue through `sglue_environment()` and `sglue_swapchain()`.

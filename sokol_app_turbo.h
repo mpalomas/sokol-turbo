@@ -8,10 +8,12 @@
 #if defined(SOKOL_TURBO_WAYLAND) && defined(SOKOL_APP_IMPL)
 #include <stdbool.h>
 #include <stdint.h>
+#define _SAPP_WAYLAND_MAX_OUTPUTS (8)
 struct wl_display;
 struct wl_registry;
 struct wl_compositor;
 struct wl_surface;
+struct wl_output;
 struct wl_seat;
 struct wl_pointer;
 struct wl_keyboard;
@@ -36,6 +38,17 @@ struct zwp_locked_pointer_v1;
 struct zwp_confined_pointer_v1;
 struct zwp_relative_pointer_manager_v1;
 struct zwp_relative_pointer_v1;
+struct wp_viewporter;
+struct wp_viewport;
+struct wp_fractional_scale_manager_v1;
+struct wp_fractional_scale_v1;
+
+typedef struct _sapp_wayland_output_t {
+    struct wl_output* output;
+    uint32_t name;
+    int32_t scale;
+    bool entered;
+} _sapp_wayland_output_t;
 
 typedef struct _sapp_wayland_t {
     struct wl_display* display;
@@ -75,7 +88,14 @@ typedef struct _sapp_wayland_t {
     struct zwp_locked_pointer_v1* locked_pointer;
     struct zwp_relative_pointer_manager_v1* relative_pointer_manager;
     struct zwp_relative_pointer_v1* relative_pointer;
+    struct wp_viewporter* viewporter;
+    struct wp_viewport* viewport;
+    struct wp_fractional_scale_manager_v1* fractional_scale_manager;
+    struct wp_fractional_scale_v1* fractional_scale;
+    _sapp_wayland_output_t outputs[_SAPP_WAYLAND_MAX_OUTPUTS];
     void* wayland_cursor_so;
+    float preferred_dpi_scale;
+    int32_t preferred_buffer_scale;
     bool pointer_serial_valid;
     bool pointer_focused;
     bool keyboard_focused;
@@ -121,6 +141,13 @@ enum {
     ZWP_RELATIVE_POINTER_MANAGER_DESTROY = 0,
     ZWP_RELATIVE_POINTER_MANAGER_GET_RELATIVE_POINTER = 1,
     ZWP_RELATIVE_POINTER_DESTROY = 0,
+    WP_VIEWPORTER_DESTROY = 0,
+    WP_VIEWPORTER_GET_VIEWPORT = 1,
+    WP_VIEWPORT_DESTROY = 0,
+    WP_VIEWPORT_SET_DESTINATION = 2,
+    WP_FRACTIONAL_SCALE_MANAGER_DESTROY = 0,
+    WP_FRACTIONAL_SCALE_MANAGER_GET_FRACTIONAL_SCALE = 1,
+    WP_FRACTIONAL_SCALE_DESTROY = 0,
 };
 
 enum {
@@ -136,6 +163,10 @@ struct zwp_locked_pointer_v1 { struct wl_proxy* proxy; };
 struct zwp_confined_pointer_v1 { struct wl_proxy* proxy; };
 struct zwp_relative_pointer_manager_v1 { struct wl_proxy* proxy; };
 struct zwp_relative_pointer_v1 { struct wl_proxy* proxy; };
+struct wp_viewporter { struct wl_proxy* proxy; };
+struct wp_viewport { struct wl_proxy* proxy; };
+struct wp_fractional_scale_manager_v1 { struct wl_proxy* proxy; };
+struct wp_fractional_scale_v1 { struct wl_proxy* proxy; };
 struct libdecor { int _unused; };
 struct libdecor_frame { int _unused; };
 struct libdecor_configuration { int _unused; };
@@ -218,6 +249,10 @@ static const struct wl_interface zwp_locked_pointer_v1_interface;
 static const struct wl_interface zwp_confined_pointer_v1_interface;
 static const struct wl_interface zwp_relative_pointer_manager_v1_interface;
 static const struct wl_interface zwp_relative_pointer_v1_interface;
+static const struct wl_interface wp_viewporter_interface;
+static const struct wl_interface wp_viewport_interface;
+static const struct wl_interface wp_fractional_scale_manager_v1_interface;
+static const struct wl_interface wp_fractional_scale_v1_interface;
 
 static const struct wl_interface* _sapp_xdg_wm_base_request_types[] = {
     NULL, NULL, &xdg_positioner_interface, &wl_surface_interface, NULL,
@@ -241,6 +276,18 @@ static const struct wl_interface* _sapp_zwp_relative_pointer_manager_request_typ
     NULL, &zwp_relative_pointer_v1_interface, &wl_pointer_interface,
 };
 static const struct wl_interface* _sapp_zwp_relative_pointer_request_types[] = {
+    NULL,
+};
+static const struct wl_interface* _sapp_wp_viewporter_request_types[] = {
+    NULL, &wp_viewport_interface, &wl_surface_interface,
+};
+static const struct wl_interface* _sapp_wp_viewport_request_types[] = {
+    NULL, NULL, NULL,
+};
+static const struct wl_interface* _sapp_wp_fractional_scale_manager_request_types[] = {
+    NULL, &wp_fractional_scale_v1_interface, &wl_surface_interface,
+};
+static const struct wl_interface* _sapp_wp_fractional_scale_request_types[] = {
     NULL,
 };
 static const struct wl_message _sapp_xdg_wm_base_requests[] = {
@@ -308,6 +355,25 @@ static const struct wl_message _sapp_zwp_relative_pointer_requests[] = {
 static const struct wl_message _sapp_zwp_relative_pointer_events[] = {
     { "relative_motion", "uuffff", _sapp_zwp_relative_pointer_request_types + 0 },
 };
+static const struct wl_message _sapp_wp_viewporter_requests[] = {
+    { "destroy", "", _sapp_wp_viewporter_request_types + 0 },
+    { "get_viewport", "no", _sapp_wp_viewporter_request_types + 1 },
+};
+static const struct wl_message _sapp_wp_viewport_requests[] = {
+    { "destroy", "", _sapp_wp_viewport_request_types + 0 },
+    { "set_source", "ffff", _sapp_wp_viewport_request_types + 0 },
+    { "set_destination", "ii", _sapp_wp_viewport_request_types + 0 },
+};
+static const struct wl_message _sapp_wp_fractional_scale_manager_requests[] = {
+    { "destroy", "", _sapp_wp_fractional_scale_manager_request_types + 0 },
+    { "get_fractional_scale", "no", _sapp_wp_fractional_scale_manager_request_types + 1 },
+};
+static const struct wl_message _sapp_wp_fractional_scale_requests[] = {
+    { "destroy", "", _sapp_wp_fractional_scale_request_types + 0 },
+};
+static const struct wl_message _sapp_wp_fractional_scale_events[] = {
+    { "preferred_scale", "u", _sapp_wp_fractional_scale_request_types + 0 },
+};
 
 static const struct wl_interface xdg_wm_base_interface = {
     "xdg_wm_base", 1, 4, _sapp_xdg_wm_base_requests, 1, _sapp_xdg_wm_base_events
@@ -339,6 +405,18 @@ static const struct wl_interface zwp_relative_pointer_manager_v1_interface = {
 static const struct wl_interface zwp_relative_pointer_v1_interface = {
     "zwp_relative_pointer_v1", 1, 1, _sapp_zwp_relative_pointer_requests, 1, _sapp_zwp_relative_pointer_events
 };
+static const struct wl_interface wp_viewporter_interface = {
+    "wp_viewporter", 1, 2, _sapp_wp_viewporter_requests, 0, NULL
+};
+static const struct wl_interface wp_viewport_interface = {
+    "wp_viewport", 1, 3, _sapp_wp_viewport_requests, 0, NULL
+};
+static const struct wl_interface wp_fractional_scale_manager_v1_interface = {
+    "wp_fractional_scale_manager_v1", 1, 2, _sapp_wp_fractional_scale_manager_requests, 0, NULL
+};
+static const struct wl_interface wp_fractional_scale_v1_interface = {
+    "wp_fractional_scale_v1", 1, 1, _sapp_wp_fractional_scale_requests, 1, _sapp_wp_fractional_scale_events
+};
 
 typedef void (*_sapp_xdg_wm_base_ping_func)(void*, struct xdg_wm_base*, uint32_t);
 typedef void (*_sapp_xdg_surface_configure_func)(void*, struct xdg_surface*, uint32_t);
@@ -357,12 +435,16 @@ struct _sapp_xdg_toplevel_listener {
 typedef void (*_sapp_zwp_locked_pointer_locked_func)(void*, struct zwp_locked_pointer_v1*);
 typedef void (*_sapp_zwp_locked_pointer_unlocked_func)(void*, struct zwp_locked_pointer_v1*);
 typedef void (*_sapp_zwp_relative_pointer_motion_func)(void*, struct zwp_relative_pointer_v1*, uint32_t, uint32_t, wl_fixed_t, wl_fixed_t, wl_fixed_t, wl_fixed_t);
+typedef void (*_sapp_wp_fractional_scale_preferred_scale_func)(void*, struct wp_fractional_scale_v1*, uint32_t);
 struct _sapp_zwp_locked_pointer_listener {
     _sapp_zwp_locked_pointer_locked_func locked;
     _sapp_zwp_locked_pointer_unlocked_func unlocked;
 };
 struct _sapp_zwp_relative_pointer_listener {
     _sapp_zwp_relative_pointer_motion_func relative_motion;
+};
+struct _sapp_wp_fractional_scale_listener {
+    _sapp_wp_fractional_scale_preferred_scale_func preferred_scale;
 };
 
 _SOKOL_PRIVATE void _sapp_xdg_wm_base_pong(struct xdg_wm_base* wm_base, uint32_t serial) {
@@ -410,6 +492,20 @@ _SOKOL_PRIVATE struct zwp_locked_pointer_v1* _sapp_zwp_pointer_constraints_lock_
 _SOKOL_PRIVATE struct zwp_relative_pointer_v1* _sapp_zwp_relative_pointer_manager_get_relative_pointer(struct zwp_relative_pointer_manager_v1* manager, struct wl_pointer* pointer) {
     return (struct zwp_relative_pointer_v1*) wl_proxy_marshal_flags((struct wl_proxy*) manager, ZWP_RELATIVE_POINTER_MANAGER_GET_RELATIVE_POINTER,
         &zwp_relative_pointer_v1_interface, wl_proxy_get_version((struct wl_proxy*) manager), 0, NULL, pointer);
+}
+
+_SOKOL_PRIVATE struct wp_viewport* _sapp_wp_viewporter_get_viewport(struct wp_viewporter* viewporter, struct wl_surface* surface) {
+    return (struct wp_viewport*) wl_proxy_marshal_flags((struct wl_proxy*) viewporter, WP_VIEWPORTER_GET_VIEWPORT,
+        &wp_viewport_interface, wl_proxy_get_version((struct wl_proxy*) viewporter), 0, NULL, surface);
+}
+
+_SOKOL_PRIVATE void _sapp_wp_viewport_set_destination(struct wp_viewport* viewport, int32_t width, int32_t height) {
+    wl_proxy_marshal_flags((struct wl_proxy*) viewport, WP_VIEWPORT_SET_DESTINATION, NULL, wl_proxy_get_version((struct wl_proxy*) viewport), 0, width, height);
+}
+
+_SOKOL_PRIVATE struct wp_fractional_scale_v1* _sapp_wp_fractional_scale_manager_get_fractional_scale(struct wp_fractional_scale_manager_v1* manager, struct wl_surface* surface) {
+    return (struct wp_fractional_scale_v1*) wl_proxy_marshal_flags((struct wl_proxy*) manager, WP_FRACTIONAL_SCALE_MANAGER_GET_FRACTIONAL_SCALE,
+        &wp_fractional_scale_v1_interface, wl_proxy_get_version((struct wl_proxy*) manager), 0, NULL, surface);
 }
 
 _SOKOL_PRIVATE bool _sapp_wayland_load_libdecor(void) {
@@ -536,6 +632,34 @@ _SOKOL_PRIVATE void _sapp_wayland_app_event(sapp_event_type type) {
     _sapp_call_event(&_sapp.event);
 }
 
+_SOKOL_PRIVATE float _sapp_wayland_effective_dpi_scale(void) {
+    if (!_sapp.desc.high_dpi) {
+        return 1.0f;
+    }
+    if (_sapp.wayland.fractional_scale) {
+        return (_sapp.wayland.preferred_dpi_scale > 0.0f) ? _sapp.wayland.preferred_dpi_scale : 1.0f;
+    }
+    int32_t output_scale = 1;
+    bool has_entered_output = false;
+    for (int i = 0; i < _SAPP_WAYLAND_MAX_OUTPUTS; i++) {
+        const _sapp_wayland_output_t* output = &_sapp.wayland.outputs[i];
+        if (output->output && output->entered) {
+            has_entered_output = true;
+            if (output->scale > output_scale) {
+                output_scale = output->scale;
+            }
+        }
+    }
+    if (has_entered_output) {
+        return (float) output_scale;
+    }
+    return (_sapp.wayland.preferred_buffer_scale > 0) ? (float) _sapp.wayland.preferred_buffer_scale : 1.0f;
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_update_dpi_scale(void) {
+    _sapp.dpi_scale = _sapp_wayland_effective_dpi_scale();
+}
+
 _SOKOL_PRIVATE void _sapp_wayland_resize(int32_t width, int32_t height) {
     if (width <= 0) {
         width = _sapp.window_width;
@@ -543,19 +667,84 @@ _SOKOL_PRIVATE void _sapp_wayland_resize(int32_t width, int32_t height) {
     if (height <= 0) {
         height = _sapp.window_height;
     }
-    if ((width != _sapp.window_width) || (height != _sapp.window_height)) {
+    _sapp_wayland_update_dpi_scale();
+    const int fb_width = _sapp_roundf_gzero((float) width * _sapp.dpi_scale);
+    const int fb_height = _sapp_roundf_gzero((float) height * _sapp.dpi_scale);
+    if ((width != _sapp.window_width) || (height != _sapp.window_height) ||
+        (fb_width != _sapp.framebuffer_width) || (fb_height != _sapp.framebuffer_height))
+    {
         _sapp.window_width = width;
         _sapp.window_height = height;
-        _sapp.framebuffer_width = width;
-        _sapp.framebuffer_height = height;
+        _sapp.framebuffer_width = fb_width;
+        _sapp.framebuffer_height = fb_height;
+        if (_sapp.wayland.viewport) {
+            _sapp_wp_viewport_set_destination(_sapp.wayland.viewport, width, height);
+        } else if (_sapp.wayland.surface && (_sapp.wayland.compositor_version >= 3)) {
+            const int32_t buffer_scale = _sapp_roundf_gzero(_sapp.dpi_scale);
+            wl_surface_set_buffer_scale(_sapp.wayland.surface, buffer_scale > 0 ? buffer_scale : 1);
+        }
         if (_sapp.wayland.egl_window) {
-            wl_egl_window_resize(_sapp.wayland.egl_window, width, height, 0, 0);
+            wl_egl_window_resize(_sapp.wayland.egl_window, fb_width, fb_height, 0, 0);
         }
         if (_sapp.valid) {
             _sapp_wayland_app_event(SAPP_EVENTTYPE_RESIZED);
         }
     }
 }
+
+_SOKOL_PRIVATE void _sapp_wayland_apply_scale(void) {
+    _sapp_wayland_resize(_sapp.window_width, _sapp.window_height);
+}
+
+_SOKOL_PRIVATE _sapp_wayland_output_t* _sapp_wayland_find_output(struct wl_output* output) {
+    for (int i = 0; i < _SAPP_WAYLAND_MAX_OUTPUTS; i++) {
+        if (_sapp.wayland.outputs[i].output == output) {
+            return &_sapp.wayland.outputs[i];
+        }
+    }
+    return 0;
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_surface_enter(void* data, struct wl_surface* surface, struct wl_output* output) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(surface);
+    _sapp_wayland_output_t* sapp_output = _sapp_wayland_find_output(output);
+    if (sapp_output) {
+        sapp_output->entered = true;
+        if (!_sapp.wayland.fractional_scale) {
+            _sapp_wayland_apply_scale();
+        }
+    }
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_surface_leave(void* data, struct wl_surface* surface, struct wl_output* output) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(surface);
+    _sapp_wayland_output_t* sapp_output = _sapp_wayland_find_output(output);
+    if (sapp_output) {
+        sapp_output->entered = false;
+        if (!_sapp.wayland.fractional_scale) {
+            _sapp_wayland_apply_scale();
+        }
+    }
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_surface_preferred_buffer_scale(void* data, struct wl_surface* surface, int32_t factor) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(surface);
+    _sapp.wayland.preferred_buffer_scale = factor > 0 ? factor : 1;
+    if (!_sapp.wayland.fractional_scale) {
+        _sapp_wayland_apply_scale();
+    }
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_surface_preferred_buffer_transform(void* data, struct wl_surface* surface, uint32_t transform) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(surface); _SOKOL_UNUSED(transform);
+}
+
+_SOKOL_PRIVATE const struct wl_surface_listener _sapp_wayland_surface_listener = {
+    _sapp_wayland_surface_enter,
+    _sapp_wayland_surface_leave,
+    _sapp_wayland_surface_preferred_buffer_scale,
+    _sapp_wayland_surface_preferred_buffer_transform,
+};
 
 _SOKOL_PRIVATE void _sapp_wayland_xdg_ping(void* data, struct xdg_wm_base* wm_base, uint32_t serial) {
     _SOKOL_UNUSED(data);
@@ -697,6 +886,8 @@ _SOKOL_PRIVATE uint32_t _sapp_wayland_mods(void) {
 
 _SOKOL_PRIVATE void _sapp_wayland_mouse_update(float x, float y, bool clear_dxdy) {
     if (!_sapp.mouse.locked) {
+        x *= _sapp.dpi_scale;
+        y *= _sapp.dpi_scale;
         if (clear_dxdy) {
             _sapp.mouse.dx = 0.0f;
             _sapp.mouse.dy = 0.0f;
@@ -992,14 +1183,24 @@ _SOKOL_PRIVATE const struct _sapp_zwp_locked_pointer_listener _sapp_wayland_lock
 _SOKOL_PRIVATE void _sapp_wayland_relative_pointer_motion(void* data, struct zwp_relative_pointer_v1* relative_pointer, uint32_t utime_hi, uint32_t utime_lo, wl_fixed_t dx, wl_fixed_t dy, wl_fixed_t dx_unaccel, wl_fixed_t dy_unaccel) {
     _SOKOL_UNUSED(data); _SOKOL_UNUSED(relative_pointer); _SOKOL_UNUSED(utime_hi); _SOKOL_UNUSED(utime_lo); _SOKOL_UNUSED(dx); _SOKOL_UNUSED(dy);
     if (_sapp.mouse.locked && _sapp.wayland.pointer_focused) {
-        _sapp.mouse.dx = (float)wl_fixed_to_double(dx_unaccel);
-        _sapp.mouse.dy = (float)wl_fixed_to_double(dy_unaccel);
+        _sapp.mouse.dx = (float)wl_fixed_to_double(dx_unaccel) * _sapp.dpi_scale;
+        _sapp.mouse.dy = (float)wl_fixed_to_double(dy_unaccel) * _sapp.dpi_scale;
         _sapp_wayland_mouse_event(SAPP_EVENTTYPE_MOUSE_MOVE, SAPP_MOUSEBUTTON_INVALID);
     }
 }
 
 _SOKOL_PRIVATE const struct _sapp_zwp_relative_pointer_listener _sapp_wayland_relative_pointer_listener = {
     _sapp_wayland_relative_pointer_motion,
+};
+
+_SOKOL_PRIVATE void _sapp_wayland_fractional_scale_preferred_scale(void* data, struct wp_fractional_scale_v1* fractional_scale, uint32_t scale) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(fractional_scale);
+    _sapp.wayland.preferred_dpi_scale = (float) scale / 120.0f;
+    _sapp_wayland_apply_scale();
+}
+
+_SOKOL_PRIVATE const struct _sapp_wp_fractional_scale_listener _sapp_wayland_fractional_scale_listener = {
+    _sapp_wayland_fractional_scale_preferred_scale,
 };
 
 _SOKOL_PRIVATE void _sapp_wayland_keyboard_keymap(void* data, struct wl_keyboard* keyboard, uint32_t format, int fd, uint32_t size) {
@@ -1153,14 +1354,66 @@ _SOKOL_PRIVATE const struct wl_seat_listener _sapp_wayland_seat_listener = {
     _sapp_wayland_seat_name,
 };
 
+_SOKOL_PRIVATE void _sapp_wayland_output_geometry(void* data, struct wl_output* output, int32_t x, int32_t y, int32_t physical_width, int32_t physical_height, int32_t subpixel, const char* make, const char* model, int32_t transform) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(output); _SOKOL_UNUSED(x); _SOKOL_UNUSED(y); _SOKOL_UNUSED(physical_width); _SOKOL_UNUSED(physical_height); _SOKOL_UNUSED(subpixel); _SOKOL_UNUSED(make); _SOKOL_UNUSED(model); _SOKOL_UNUSED(transform);
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_output_mode(void* data, struct wl_output* output, uint32_t flags, int32_t width, int32_t height, int32_t refresh) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(output); _SOKOL_UNUSED(flags); _SOKOL_UNUSED(width); _SOKOL_UNUSED(height); _SOKOL_UNUSED(refresh);
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_output_done(void* data, struct wl_output* output) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(output);
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_output_scale(void* data, struct wl_output* output, int32_t factor) {
+    _SOKOL_UNUSED(data);
+    _sapp_wayland_output_t* sapp_output = _sapp_wayland_find_output(output);
+    if (sapp_output) {
+        sapp_output->scale = factor > 0 ? factor : 1;
+        if (sapp_output->entered && !_sapp.wayland.fractional_scale) {
+            _sapp_wayland_apply_scale();
+        }
+    }
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_output_name(void* data, struct wl_output* output, const char* name) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(output); _SOKOL_UNUSED(name);
+}
+
+_SOKOL_PRIVATE void _sapp_wayland_output_description(void* data, struct wl_output* output, const char* description) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(output); _SOKOL_UNUSED(description);
+}
+
+_SOKOL_PRIVATE const struct wl_output_listener _sapp_wayland_output_listener = {
+    _sapp_wayland_output_geometry,
+    _sapp_wayland_output_mode,
+    _sapp_wayland_output_done,
+    _sapp_wayland_output_scale,
+    _sapp_wayland_output_name,
+    _sapp_wayland_output_description,
+};
+
 _SOKOL_PRIVATE void _sapp_wayland_registry_global(void* data, struct wl_registry* registry, uint32_t name, const char* interface, uint32_t version) {
     _SOKOL_UNUSED(data);
     if (0 == strcmp(interface, wl_compositor_interface.name)) {
-        uint32_t bind_version = version < 4 ? version : 4;
+        uint32_t bind_version = version < 6 ? version : 6;
         _sapp.wayland.compositor_version = bind_version;
         _sapp.wayland.compositor = (struct wl_compositor*) wl_registry_bind(registry, name, &wl_compositor_interface, bind_version);
     } else if (0 == strcmp(interface, wl_shm_interface.name)) {
         _sapp.wayland.shm = (struct wl_shm*) wl_registry_bind(registry, name, &wl_shm_interface, 1);
+    } else if (0 == strcmp(interface, wl_output_interface.name)) {
+        for (int i = 0; i < _SAPP_WAYLAND_MAX_OUTPUTS; i++) {
+            if (!_sapp.wayland.outputs[i].output) {
+                uint32_t bind_version = version < 2 ? version : 2;
+                _sapp.wayland.outputs[i].output = (struct wl_output*) wl_registry_bind(registry, name, &wl_output_interface, bind_version);
+                _sapp.wayland.outputs[i].name = name;
+                _sapp.wayland.outputs[i].scale = 1;
+                _sapp.wayland.outputs[i].entered = false;
+                wl_output_add_listener(_sapp.wayland.outputs[i].output, &_sapp_wayland_output_listener, 0);
+                break;
+            }
+        }
     } else if (0 == strcmp(interface, xdg_wm_base_interface.name)) {
         uint32_t bind_version = version < 4 ? version : 4;
         _sapp.wayland.wm_base_version = bind_version;
@@ -1177,11 +1430,30 @@ _SOKOL_PRIVATE void _sapp_wayland_registry_global(void* data, struct wl_registry
     } else if (0 == strcmp(interface, zwp_relative_pointer_manager_v1_interface.name)) {
         uint32_t bind_version = version < 1 ? version : 1;
         _sapp.wayland.relative_pointer_manager = (struct zwp_relative_pointer_manager_v1*) wl_registry_bind(registry, name, &zwp_relative_pointer_manager_v1_interface, bind_version);
+    } else if (0 == strcmp(interface, wp_viewporter_interface.name)) {
+        uint32_t bind_version = version < 1 ? version : 1;
+        _sapp.wayland.viewporter = (struct wp_viewporter*) wl_registry_bind(registry, name, &wp_viewporter_interface, bind_version);
+    } else if (0 == strcmp(interface, wp_fractional_scale_manager_v1_interface.name)) {
+        uint32_t bind_version = version < 1 ? version : 1;
+        _sapp.wayland.fractional_scale_manager = (struct wp_fractional_scale_manager_v1*) wl_registry_bind(registry, name, &wp_fractional_scale_manager_v1_interface, bind_version);
     }
 }
 
 _SOKOL_PRIVATE void _sapp_wayland_registry_global_remove(void* data, struct wl_registry* registry, uint32_t name) {
-    _SOKOL_UNUSED(data); _SOKOL_UNUSED(registry); _SOKOL_UNUSED(name);
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(registry);
+    for (int i = 0; i < _SAPP_WAYLAND_MAX_OUTPUTS; i++) {
+        if (_sapp.wayland.outputs[i].output && (_sapp.wayland.outputs[i].name == name)) {
+            wl_output_destroy(_sapp.wayland.outputs[i].output);
+            _sapp.wayland.outputs[i].output = 0;
+            _sapp.wayland.outputs[i].name = 0;
+            _sapp.wayland.outputs[i].scale = 1;
+            _sapp.wayland.outputs[i].entered = false;
+            if (!_sapp.wayland.fractional_scale) {
+                _sapp_wayland_apply_scale();
+            }
+            break;
+        }
+    }
 }
 
 _SOKOL_PRIVATE const struct wl_registry_listener _sapp_wayland_registry_listener = {
@@ -1192,6 +1464,16 @@ _SOKOL_PRIVATE const struct wl_registry_listener _sapp_wayland_registry_listener
 _SOKOL_PRIVATE void _sapp_wayland_init_window(void) {
     _sapp.wayland.surface = wl_compositor_create_surface(_sapp.wayland.compositor);
     SOKOL_ASSERT(_sapp.wayland.surface);
+    wl_surface_add_listener(_sapp.wayland.surface, &_sapp_wayland_surface_listener, 0);
+    if (_sapp.wayland.viewporter) {
+        _sapp.wayland.viewport = _sapp_wp_viewporter_get_viewport(_sapp.wayland.viewporter, _sapp.wayland.surface);
+    }
+    if (_sapp.wayland.viewport && _sapp.wayland.fractional_scale_manager) {
+        _sapp.wayland.fractional_scale = _sapp_wp_fractional_scale_manager_get_fractional_scale(_sapp.wayland.fractional_scale_manager, _sapp.wayland.surface);
+        if (_sapp.wayland.fractional_scale) {
+            wl_proxy_add_listener((struct wl_proxy*) _sapp.wayland.fractional_scale, (void (**)(void)) &_sapp_wayland_fractional_scale_listener, NULL);
+        }
+    }
     if (_sapp.wayland.using_libdecor) {
         _sapp.wayland.decor_frame = _sapp_libdecor.decorate(_sapp.wayland.decor_context, _sapp.wayland.surface, &_sapp_wayland_libdecor_frame_interface, 0);
         if (!_sapp.wayland.decor_frame) {
@@ -1263,7 +1545,7 @@ _SOKOL_PRIVATE void _sapp_wayland_egl_init(void) {
         _SAPP_PANIC(LINUX_EGL_NO_CONFIGS);
     }
     EGLConfig config = configs[0];
-    _sapp.wayland.egl_window = wl_egl_window_create(_sapp.wayland.surface, _sapp.window_width, _sapp.window_height);
+    _sapp.wayland.egl_window = wl_egl_window_create(_sapp.wayland.surface, _sapp.framebuffer_width, _sapp.framebuffer_height);
     if (!_sapp.wayland.egl_window) {
         _SAPP_PANIC(LINUX_EGL_CREATE_WINDOW_SURFACE_FAILED);
     }
@@ -1360,6 +1642,8 @@ _SOKOL_PRIVATE void _sapp_wayland_run(const sapp_desc* desc) {
     pthread_attr_destroy(&pthread_attr);
     _sapp_init_state(desc);
     _sapp.dpi_scale = 1.0f;
+    _sapp.wayland.preferred_dpi_scale = 1.0f;
+    _sapp.wayland.preferred_buffer_scale = 1;
     _sapp.wayland.display = wl_display_connect(NULL);
     if (!_sapp.wayland.display) {
         _SAPP_PANIC(LINUX_X11_OPEN_DISPLAY_FAILED);
@@ -1475,6 +1759,22 @@ _SOKOL_PRIVATE void _sapp_wayland_run(const sapp_desc* desc) {
         _sapp_xdg_proxy_destroy((struct wl_proxy*) _sapp.wayland.relative_pointer_manager, ZWP_RELATIVE_POINTER_MANAGER_DESTROY);
         _sapp.wayland.relative_pointer_manager = 0;
     }
+    if (_sapp.wayland.fractional_scale) {
+        _sapp_xdg_proxy_destroy((struct wl_proxy*) _sapp.wayland.fractional_scale, WP_FRACTIONAL_SCALE_DESTROY);
+        _sapp.wayland.fractional_scale = 0;
+    }
+    if (_sapp.wayland.viewport) {
+        _sapp_xdg_proxy_destroy((struct wl_proxy*) _sapp.wayland.viewport, WP_VIEWPORT_DESTROY);
+        _sapp.wayland.viewport = 0;
+    }
+    if (_sapp.wayland.fractional_scale_manager) {
+        _sapp_xdg_proxy_destroy((struct wl_proxy*) _sapp.wayland.fractional_scale_manager, WP_FRACTIONAL_SCALE_MANAGER_DESTROY);
+        _sapp.wayland.fractional_scale_manager = 0;
+    }
+    if (_sapp.wayland.viewporter) {
+        _sapp_xdg_proxy_destroy((struct wl_proxy*) _sapp.wayland.viewporter, WP_VIEWPORTER_DESTROY);
+        _sapp.wayland.viewporter = 0;
+    }
     if (_sapp.wayland.decor_frame) {
         _sapp_libdecor.frame_unref(_sapp.wayland.decor_frame);
         _sapp.wayland.decor_frame = 0;
@@ -1500,6 +1800,15 @@ _SOKOL_PRIVATE void _sapp_wayland_run(const sapp_desc* desc) {
     if (_sapp.wayland.shm) {
         wl_shm_destroy(_sapp.wayland.shm);
         _sapp.wayland.shm = 0;
+    }
+    for (int i = 0; i < _SAPP_WAYLAND_MAX_OUTPUTS; i++) {
+        if (_sapp.wayland.outputs[i].output) {
+            wl_output_destroy(_sapp.wayland.outputs[i].output);
+            _sapp.wayland.outputs[i].output = 0;
+            _sapp.wayland.outputs[i].name = 0;
+            _sapp.wayland.outputs[i].scale = 1;
+            _sapp.wayland.outputs[i].entered = false;
+        }
     }
     if (_sapp.wayland.registry) {
         wl_registry_destroy(_sapp.wayland.registry);
