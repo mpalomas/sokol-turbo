@@ -1,4 +1,4 @@
-# sokol-turbo Notes
+# sokol-turbo
 
 This file is for fork-local notes and workflow details. Keep upstream-facing documentation in `README.md` unchanged when possible so syncing from `floooh/sokol` has fewer conflicts.
 
