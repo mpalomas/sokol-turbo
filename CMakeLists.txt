@@ -9,13 +9,31 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 include(FetchContent)
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
 
-set(SOKOL_BUILD_MODE "static" CACHE STRING "Build sokol component libraries as static or shared")
-set_property(CACHE SOKOL_BUILD_MODE PROPERTY STRINGS static shared)
-if(NOT SOKOL_BUILD_MODE MATCHES "^(static|shared)$")
-    message(FATAL_ERROR "SOKOL_BUILD_MODE must be 'static' or 'shared'")
+set(SOKOL_BUILD_MODE "both" CACHE STRING "Build sokol component libraries as static, shared or both")
+set_property(CACHE SOKOL_BUILD_MODE PROPERTY STRINGS static shared both)
+if(NOT SOKOL_BUILD_MODE MATCHES "^(static|shared|both)$")
+    message(FATAL_ERROR "SOKOL_BUILD_MODE must be 'static', 'shared' or 'both'")
 endif()
-string(TOUPPER "${SOKOL_BUILD_MODE}" SOKOL_LIBRARY_TYPE)
+
+option(SOKOL_BUILD_STATIC "Build static sokol component libraries" ON)
+option(SOKOL_BUILD_SHARED "Build shared sokol component libraries" ON)
+if(SOKOL_BUILD_MODE STREQUAL "static")
+    set(SOKOL_BUILD_STATIC ON CACHE BOOL "Build static sokol component libraries" FORCE)
+    set(SOKOL_BUILD_SHARED OFF CACHE BOOL "Build shared sokol component libraries" FORCE)
+elseif(SOKOL_BUILD_MODE STREQUAL "shared")
+    set(SOKOL_BUILD_STATIC OFF CACHE BOOL "Build static sokol component libraries" FORCE)
+    set(SOKOL_BUILD_SHARED ON CACHE BOOL "Build shared sokol component libraries" FORCE)
+elseif(SOKOL_BUILD_MODE STREQUAL "both")
+    set(SOKOL_BUILD_STATIC ON CACHE BOOL "Build static sokol component libraries" FORCE)
+    set(SOKOL_BUILD_SHARED ON CACHE BOOL "Build shared sokol component libraries" FORCE)
+endif()
+if(NOT SOKOL_BUILD_STATIC AND NOT SOKOL_BUILD_SHARED)
+    message(FATAL_ERROR "At least one of SOKOL_BUILD_STATIC or SOKOL_BUILD_SHARED must be ON")
+endif()
+message(STATUS "Sokol library variants: static=${SOKOL_BUILD_STATIC}, shared=${SOKOL_BUILD_SHARED}")
 
 set(SOKOL_BACKEND "SOKOL_GLCORE" CACHE STRING "Select sokol backend define")
 set_property(CACHE SOKOL_BACKEND PROPERTY STRINGS
@@ -127,35 +145,6 @@ elseif(APPLE)
     endif()
 endif()
 
-function(sokol_configure_target target)
-    target_include_directories(${target} PUBLIC
-        "${SOKOL_ROOT}"
-        "${SOKOL_ROOT}/util")
-    target_compile_definitions(${target} PUBLIC ${sokol_public_defines})
-    if(SOKOL_BUILD_MODE STREQUAL "shared")
-        target_compile_definitions(${target} PUBLIC SOKOL_DLL)
-        if(NOT WIN32)
-            set_target_properties(${target} PROPERTIES
-                C_VISIBILITY_PRESET hidden
-                CXX_VISIBILITY_PRESET hidden
-                VISIBILITY_INLINES_HIDDEN ON)
-        endif()
-    endif()
-    if(CMAKE_BUILD_TYPE MATCHES "^[Rr]elease$")
-        if(MSVC)
-            target_compile_options(${target} PRIVATE /Gy)
-            target_link_options(${target} PRIVATE /OPT:REF /OPT:ICF)
-        elseif(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
-            target_compile_options(${target} PRIVATE -ffunction-sections -fdata-sections)
-            if(APPLE)
-                target_link_options(${target} PRIVATE -dead_strip)
-            else()
-                target_link_options(${target} PRIVATE -Wl,--gc-sections)
-            endif()
-        endif()
-    endif()
-endfunction()
-
 function(sokol_apply_release_size_flags target)
     if(CMAKE_BUILD_TYPE MATCHES "^[Rr]elease$")
         if(MSVC)
@@ -172,53 +161,157 @@ function(sokol_apply_release_size_flags target)
     endif()
 endfunction()
 
-function(sokol_add_component target source)
-    add_library(${target} ${SOKOL_LIBRARY_TYPE} "${source}")
-    sokol_configure_target(${target})
+function(sokol_configure_target target library_type)
+    target_include_directories(${target} PUBLIC
+        "$<BUILD_INTERFACE:${SOKOL_ROOT}>"
+        "$<BUILD_INTERFACE:${SOKOL_ROOT}/util>"
+        "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
+        "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/util>")
+    target_compile_definitions(${target} PUBLIC ${sokol_public_defines})
+    if(library_type STREQUAL "SHARED")
+        target_compile_definitions(${target} PUBLIC SOKOL_DLL)
+    endif()
+    sokol_apply_release_size_flags(${target})
+endfunction()
+
+function(sokol_add_component target library_type source)
+    add_library(${target} ${library_type} "${source}")
+    sokol_configure_target(${target} ${library_type})
     target_compile_definitions(${target} PRIVATE IMPL)
-    target_link_libraries(${target} PUBLIC ${ARGN})
+    target_link_libraries(${target} PUBLIC ${ARGN} ${sokol_system_libs})
+    if(target STREQUAL "sokol_app_shared")
+        target_compile_definitions(${target} PUBLIC SOKOL_NO_ENTRY)
+    endif()
     if(APPLE AND source MATCHES "sokol_app")
         set_source_files_properties("${source}" PROPERTIES LANGUAGE OBJC)
     endif()
 endfunction()
 
 set(sokol_components)
+set(sokol_static_components)
+set(sokol_shared_components)
 macro(sokol_component option target source)
     if(${option})
-        sokol_add_component(${target} "${source}" ${ARGN})
-        list(APPEND sokol_components ${target})
+        set(static_deps)
+        set(shared_deps)
+        foreach(dep ${ARGN})
+            list(APPEND static_deps ${dep}_static)
+            list(APPEND shared_deps ${dep}_shared)
+        endforeach()
+        if(SOKOL_BUILD_STATIC)
+            sokol_add_component(${target}_static STATIC "${source}" ${static_deps})
+            list(APPEND sokol_static_components ${target}_static)
+        endif()
+        if(SOKOL_BUILD_SHARED)
+            sokol_add_component(${target}_shared SHARED "${source}" ${shared_deps})
+            list(APPEND sokol_shared_components ${target}_shared)
+        endif()
     endif()
 endmacro()
 
 sokol_component(SOKOL_BUILD_APP sokol_app "${SOKOL_ROOT}/cmake/impl/sokol_app_impl.c")
-sokol_component(SOKOL_BUILD_GFX sokol_gfx "${SOKOL_ROOT}/bindgen/impl/sokol_gfx.c")
-sokol_component(SOKOL_BUILD_GLUE sokol_glue "${SOKOL_ROOT}/bindgen/impl/sokol_glue.c" sokol_app sokol_gfx)
-sokol_component(SOKOL_BUILD_TIME sokol_time "${SOKOL_ROOT}/bindgen/impl/sokol_time.c")
-sokol_component(SOKOL_BUILD_AUDIO sokol_audio "${SOKOL_ROOT}/bindgen/impl/sokol_audio.c")
-sokol_component(SOKOL_BUILD_FETCH sokol_fetch "${SOKOL_ROOT}/bindgen/impl/sokol_fetch.c")
-sokol_component(SOKOL_BUILD_ARGS sokol_args "${SOKOL_ROOT}/bindgen/impl/sokol_args.c")
-sokol_component(SOKOL_BUILD_LOG sokol_log "${SOKOL_ROOT}/bindgen/impl/sokol_log.c")
-sokol_component(SOKOL_BUILD_GL sokol_gl "${SOKOL_ROOT}/bindgen/impl/sokol_gl.c" sokol_gfx)
-sokol_component(SOKOL_BUILD_DEBUGTEXT sokol_debugtext "${SOKOL_ROOT}/bindgen/impl/sokol_debugtext.c" sokol_gfx)
-sokol_component(SOKOL_BUILD_SHAPE sokol_shape "${SOKOL_ROOT}/bindgen/impl/sokol_shape.c" sokol_gfx)
-sokol_component(SOKOL_BUILD_LETTERBOX sokol_letterbox "${SOKOL_ROOT}/bindgen/impl/sokol_letterbox.c")
-sokol_component(SOKOL_BUILD_COLOR sokol_color "${SOKOL_ROOT}/bindgen/impl/sokol_color.c" sokol_gfx)
-sokol_component(SOKOL_BUILD_MEMTRACK sokol_memtrack "${SOKOL_ROOT}/bindgen/impl/sokol_memtrack.c")
+sokol_component(SOKOL_BUILD_GFX sokol_gfx "${SOKOL_ROOT}/cmake/impl/sokol_gfx_impl.c")
+sokol_component(SOKOL_BUILD_GLUE sokol_glue "${SOKOL_ROOT}/cmake/impl/sokol_glue_impl.c" sokol_app sokol_gfx)
+sokol_component(SOKOL_BUILD_TIME sokol_time "${SOKOL_ROOT}/cmake/impl/sokol_time_impl.c")
+sokol_component(SOKOL_BUILD_AUDIO sokol_audio "${SOKOL_ROOT}/cmake/impl/sokol_audio_impl.c")
+sokol_component(SOKOL_BUILD_FETCH sokol_fetch "${SOKOL_ROOT}/cmake/impl/sokol_fetch_impl.c")
+sokol_component(SOKOL_BUILD_ARGS sokol_args "${SOKOL_ROOT}/cmake/impl/sokol_args_impl.c")
+sokol_component(SOKOL_BUILD_LOG sokol_log "${SOKOL_ROOT}/cmake/impl/sokol_log_impl.c")
+sokol_component(SOKOL_BUILD_GL sokol_gl "${SOKOL_ROOT}/cmake/impl/sokol_gl_impl.c" sokol_gfx)
+sokol_component(SOKOL_BUILD_DEBUGTEXT sokol_debugtext "${SOKOL_ROOT}/cmake/impl/sokol_debugtext_impl.c" sokol_gfx)
+sokol_component(SOKOL_BUILD_SHAPE sokol_shape "${SOKOL_ROOT}/cmake/impl/sokol_shape_impl.c" sokol_gfx)
+sokol_component(SOKOL_BUILD_LETTERBOX sokol_letterbox "${SOKOL_ROOT}/cmake/impl/sokol_letterbox_impl.c")
+sokol_component(SOKOL_BUILD_COLOR sokol_color "${SOKOL_ROOT}/cmake/impl/sokol_color_impl.c" sokol_gfx)
+sokol_component(SOKOL_BUILD_MEMTRACK sokol_memtrack "${SOKOL_ROOT}/cmake/impl/sokol_memtrack_impl.c")
 if(SOKOL_BUILD_FONTSTASH)
-    sokol_add_component(sokol_fontstash "${SOKOL_ROOT}/bindgen/impl/sokol_fontstash.c" sokol_gfx sokol_gl)
-    target_include_directories(sokol_fontstash PUBLIC "${SOKOL_SAMPLES_DIR}/libs/fontstash")
-    list(APPEND sokol_components sokol_fontstash)
+    if(SOKOL_BUILD_STATIC)
+        sokol_add_component(sokol_fontstash_static STATIC "${SOKOL_ROOT}/cmake/impl/sokol_fontstash_impl.c" sokol_gfx_static sokol_gl_static)
+        target_include_directories(sokol_fontstash_static PUBLIC "$<BUILD_INTERFACE:${SOKOL_SAMPLES_DIR}/libs/fontstash>")
+        list(APPEND sokol_static_components sokol_fontstash_static)
+    endif()
+    if(SOKOL_BUILD_SHARED)
+        sokol_add_component(sokol_fontstash_shared SHARED "${SOKOL_ROOT}/cmake/impl/sokol_fontstash_impl.c" sokol_gfx_shared sokol_gl_shared)
+        target_include_directories(sokol_fontstash_shared PUBLIC "$<BUILD_INTERFACE:${SOKOL_SAMPLES_DIR}/libs/fontstash>")
+        list(APPEND sokol_shared_components sokol_fontstash_shared)
+    endif()
 endif()
 if(SOKOL_BUILD_SPINE)
-    sokol_add_component(sokol_spine "${SOKOL_ROOT}/bindgen/impl/sokol_spine.c" sokol_gfx)
-    target_include_directories(sokol_spine PUBLIC "${SOKOL_SAMPLES_DIR}/libs/spine-c/include")
-    list(APPEND sokol_components sokol_spine)
+    if(SOKOL_BUILD_STATIC)
+        sokol_add_component(sokol_spine_static STATIC "${SOKOL_ROOT}/cmake/impl/sokol_spine_impl.c" sokol_gfx_static)
+        target_include_directories(sokol_spine_static PUBLIC "$<BUILD_INTERFACE:${SOKOL_SAMPLES_DIR}/libs/spine-c/include>")
+        list(APPEND sokol_static_components sokol_spine_static)
+    endif()
+    if(SOKOL_BUILD_SHARED)
+        sokol_add_component(sokol_spine_shared SHARED "${SOKOL_ROOT}/cmake/impl/sokol_spine_impl.c" sokol_gfx_shared)
+        target_include_directories(sokol_spine_shared PUBLIC "$<BUILD_INTERFACE:${SOKOL_SAMPLES_DIR}/libs/spine-c/include>")
+        list(APPEND sokol_shared_components sokol_spine_shared)
+    endif()
+endif()
+
+if(SOKOL_BUILD_STATIC)
+    add_library(sokol_static INTERFACE)
+    target_link_libraries(sokol_static INTERFACE ${sokol_static_components} ${sokol_system_libs})
+    target_include_directories(sokol_static INTERFACE
+        "$<BUILD_INTERFACE:${SOKOL_ROOT}>"
+        "$<BUILD_INTERFACE:${SOKOL_ROOT}/util>"
+        "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
+        "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/util>")
+    target_compile_definitions(sokol_static INTERFACE ${sokol_public_defines})
+endif()
+if(SOKOL_BUILD_SHARED)
+    add_library(sokol_shared INTERFACE)
+    target_link_libraries(sokol_shared INTERFACE ${sokol_shared_components} ${sokol_system_libs})
+    target_include_directories(sokol_shared INTERFACE
+        "$<BUILD_INTERFACE:${SOKOL_ROOT}>"
+        "$<BUILD_INTERFACE:${SOKOL_ROOT}/util>"
+        "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
+        "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/util>")
+    target_compile_definitions(sokol_shared INTERFACE ${sokol_public_defines} SOKOL_DLL)
 endif()
 
 add_library(sokol INTERFACE)
-target_link_libraries(sokol INTERFACE ${sokol_components} ${sokol_system_libs})
-target_include_directories(sokol INTERFACE "${SOKOL_ROOT}" "${SOKOL_ROOT}/util")
-target_compile_definitions(sokol INTERFACE ${sokol_public_defines})
+if(SOKOL_BUILD_STATIC)
+    target_link_libraries(sokol INTERFACE sokol_static)
+else()
+    target_link_libraries(sokol INTERFACE sokol_shared)
+endif()
+
+set(sokol_install_targets sokol ${sokol_static_components} ${sokol_shared_components})
+if(TARGET sokol_static)
+    list(APPEND sokol_install_targets sokol_static)
+endif()
+if(TARGET sokol_shared)
+    list(APPEND sokol_install_targets sokol_shared)
+endif()
+
+install(TARGETS ${sokol_install_targets}
+    EXPORT sokolTargets
+    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+install(FILES
+    "${SOKOL_ROOT}/sokol_app.h"
+    "${SOKOL_ROOT}/sokol_args.h"
+    "${SOKOL_ROOT}/sokol_audio.h"
+    "${SOKOL_ROOT}/sokol_fetch.h"
+    "${SOKOL_ROOT}/sokol_gfx.h"
+    "${SOKOL_ROOT}/sokol_glue.h"
+    "${SOKOL_ROOT}/sokol_log.h"
+    "${SOKOL_ROOT}/sokol_time.h"
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+install(DIRECTORY "${SOKOL_ROOT}/util/"
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/util"
+    FILES_MATCHING PATTERN "sokol_*.h")
+install(EXPORT sokolTargets
+    NAMESPACE sokol::
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/sokol")
+configure_package_config_file(
+    "${SOKOL_ROOT}/cmake/sokolConfig.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/sokolConfig.cmake"
+    INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/sokol")
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/sokolConfig.cmake"
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/sokol")
 
 function(sokol_sample_target_name out name suffix)
     string(REPLACE "-" "_" safe "${name}")
@@ -341,6 +434,10 @@ function(sokol_add_sample name)
             if(NOT SOKOL_SAMPLES_WITH_OZZ)
                 return()
             endif()
+        elseif(dep STREQUAL "ozzutil")
+            if(NOT SOKOL_SAMPLES_WITH_OZZ)
+                return()
+            endif()
         elseif(dep STREQUAL "libmodplug")
             if(NOT SOKOL_SAMPLES_WITH_MODPLUG)
                 return()
@@ -431,8 +528,10 @@ if(SOKOL_BUILD_SAMPLES)
         add_library(sample_spine STATIC ${spine_sources})
         target_include_directories(sample_spine PUBLIC "${SOKOL_SAMPLES_DIR}/libs/spine-c/include")
     endif()
-    add_library(sample_ozzutil STATIC "${SOKOL_SAMPLES_DIR}/libs/ozzutil/ozzutil.cc")
-    target_include_directories(sample_ozzutil PUBLIC "${SOKOL_SAMPLES_DIR}/libs/ozzutil")
+    if(SOKOL_SAMPLES_WITH_OZZ)
+        add_library(sample_ozzutil STATIC "${SOKOL_SAMPLES_DIR}/libs/ozzutil/ozzutil.cc")
+        target_include_directories(sample_ozzutil PUBLIC "${SOKOL_SAMPLES_DIR}/libs/ozzutil")
+    endif()
 
     sokol_add_sample(clear UI cc)
     sokol_add_sample(triangle UI cc SHD)
